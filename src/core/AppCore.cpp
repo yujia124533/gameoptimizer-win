@@ -115,13 +115,15 @@ std::string AppCore::OptimizeForGame(GameId id) {
     std::ostringstream os;
     os << "== 优化 " << gameName << " ==\n";
     os << "所有功能免费：全部优化项对所有人开放。\n";
-    os << "预设: " << preset.description << "\n";
+    os << "预设方案: " << preset.description << "\n\n";
+    os << "-- 优化流程 --\n";
 
-    // 1) 找到或代启动游戏进程（路径：CLI/GUI 显式 > 每游戏配置）
+    // [1] 目标进程：找到运行中的游戏，或按配置代启动（路径：CLI/GUI 显式 > 每游戏配置）
     const std::wstring launchExe = !config_.gameExeOverride.empty()
                                        ? Utf8ToWide(config_.gameExeOverride)
                                        : Utf8ToWide(gc.exePath);
     uint32_t pid = FindProcessByExeName(GameExeName(id));
+    bool launched = false;
     if (pid == 0 && !launchExe.empty()) {
         const bool applyOnLaunch = gc.optimizedOnLaunch;
         HAL::LaunchResult lr = HAL::LaunchGameSuspended(
@@ -133,49 +135,39 @@ std::string AppCore::OptimizeForGame(GameId id) {
             applyOnLaunch ? preset.workingSetMaxMB : 0);
         if (lr.ok) {
             pid = lr.pid;
-            os << "代启动: pid=" << lr.pid
-               << (applyOnLaunch ? "" : "（未自动应用优化，仅启动）");
-            if (!lr.error.empty()) os << "（非致命警告: " << lr.error << "）";
-            os << "\n";
+            launched = true;
             CloseHandle(lr.hThread);
             CloseHandle(lr.hProcess);
-        } else {
-            os << "代启动失败: " << lr.error << "\n";
         }
     }
-
     if (pid == 0) {
-        os << "未找到运行中的 " << WideToUtf8(GameExeName(id).c_str())
-           << "，且未提供可执行文件路径。\n"
-           << "请先启动游戏，或使用 --game-exe <路径> 让工具代启动。\n";
+        os << "  未找到运行中的 " << WideToUtf8(GameExeName(id).c_str())
+           << "，且未配置可执行文件路径。\n"
+           << "  请先启动游戏，或用 game <name> --exe <路径> 配置后重试。\n";
         return os.str();
     }
-
-    // 2) 快照（应用任何修改之前）
-    rollback_.CreateSavePoint(pid, gameName);
-
-    // 3) 应用（代启动模式下设置已生效，这里幂等重放以统一记录）
-    const SecurityRollback::ApplyReport rep = SecurityRollback::ApplyPreset(pid, preset);
-    os << "应用结果: 成功 " << rep.appliedCount << " 项";
-    if (rep.failedCount > 0) os << "，失败 " << rep.failedCount << " 项";
+    os << "  1) 目标进程: " << WideToUtf8(GameExeName(id).c_str());
+    if (launched) os << "（代启动 pid=" << pid << "）";
     os << "\n";
-    for (const auto& f : rep.failures) os << "  - " << f << "\n";
 
-    // 4) 电源方案（默认关闭；需要管理员权限）
-    if (config_.allowPowerSchemeSwitch && preset.switchHighPerformancePower) {
-        if (HAL::ActivateHighPerformanceScheme()) {
-            os << "电源方案: 已切换高性能\n";
-        } else {
-            os << "电源方案: 切换失败（" << HAL::LastErrorText() << "）\n";
-        }
-    } else if (preset.switchHighPerformancePower) {
-        os << "电源方案: 未启用（需 --power 且以管理员运行）\n";
+    // [2] 快照（应用任何修改之前，持久化到磁盘）
+    rollback_.CreateSavePoint(pid, gameName);
+    os << "  2) 快照: 已保存（可随时回滚到应用前状态）\n";
+
+    // [3..] 逐项应用（电源由 ApplyPreset 处理；未启用 --power/开关时不尝试）
+    if (!config_.allowPowerSchemeSwitch) preset.switchHighPerformancePower = false;
+    const SecurityRollback::ApplyReport rep = SecurityRollback::ApplyPreset(pid, preset);
+    int step = 3;
+    for (const auto& item : rep.items) {
+        os << "  " << step++ << ") " << item.first << ": "
+           << (item.second ? "成功" : "失败") << "\n";
     }
+    for (const auto& f : rep.failures) os << "       ↳ " << f << "\n";
 
-    // 5) 看门狗
+    // [最后] 看门狗
     SecurityRollback::WatchdogConfig wc;
     rollback_.StartWatchdog(wc);
-    os << "看门狗: 已启动（10 秒宽限期；异常将"
+    os << "  " << step++ << ") 看门狗: 已启动（10 秒宽限期；异常将"
        << (config_.autoRollbackOnUnstable ? "自动回滚" : "提示人工回滚") << "）\n";
     return os.str();
 }

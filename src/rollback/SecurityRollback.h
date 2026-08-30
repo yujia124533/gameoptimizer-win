@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "preset/GamePreset.h"
@@ -40,7 +41,8 @@ public:
         bool ok = false;                    // 是否有任何项成功
         int appliedCount = 0;
         int failedCount = 0;
-        std::vector<std::string> failures;  // 失败原因（含降级说明）
+        std::vector<std::string> failures;        // 失败原因（含降级说明）
+        std::vector<std::pair<std::string, bool>> items;  // 每步结果（名称, 是否成功），供流程显示
     };
     static ApplyReport ApplyPreset(uint32_t processId, const GamePreset& preset);
 
