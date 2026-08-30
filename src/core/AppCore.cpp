@@ -20,6 +20,7 @@
 #include <cctype>
 #include <sstream>
 
+#include "config/GameConfig.h"
 #include "hal/HAL.h"
 #include "hardware/HardwareDetector.h"
 
@@ -73,6 +74,10 @@ uint32_t FindProcessByExeName(const std::wstring& exeName) {
     return pid;
 }
 
+const GameId kAllGames[] = {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,
+                            GameId::PUBG, GameId::Valorant, GameId::Apex,
+                            GameId::Dota2, GameId::Overwatch2};
+
 }  // namespace
 
 AppCore::AppCore(const AppConfig& cfg) : config_(cfg) {
@@ -104,6 +109,14 @@ std::string AppCore::OptimizeForGame(GameId id) {
         if (preset.workingSetMaxMB != 0) preset.workingSetMaxMB = 0;
         if (preset.switchHighPerformancePower) preset.switchHighPerformancePower = false;
     }
+    // 每游戏「优化启动」开关进一步门控
+    const GameLaunchConfig gc = GameConfig::Get(id);
+    if (!gc.frameLatency) preset.gpuMaxFrames = 0;
+    if (!gc.workingSet) {
+        preset.workingSetMinMB = 0;
+        preset.workingSetMaxMB = 0;
+    }
+    if (!gc.powerScheme) preset.switchHighPerformancePower = false;
 
     std::ostringstream os;
     os << "== 优化 " << gameName << " ==\n";
@@ -111,16 +124,24 @@ std::string AppCore::OptimizeForGame(GameId id) {
        << (license_.message.empty() ? "" : ("  " + license_.message)) << "\n";
     os << "预设: " << preset.description << "\n";
 
-    // 1) 找到或代启动游戏进程
+    // 1) 找到或代启动游戏进程（路径：CLI/GUI 显式 > 每游戏配置）
+    const std::wstring launchExe = !config_.gameExeOverride.empty()
+                                       ? Utf8ToWide(config_.gameExeOverride)
+                                       : Utf8ToWide(gc.exePath);
     uint32_t pid = FindProcessByExeName(GameExeName(id));
-    if (pid == 0 && !config_.gameExeOverride.empty()) {
+    if (pid == 0 && !launchExe.empty()) {
+        const bool applyOnLaunch = gc.optimizedOnLaunch;
         HAL::LaunchResult lr = HAL::LaunchGameSuspended(
-            Utf8ToWide(config_.gameExeOverride), L"", preset.processPriorityClass,
-            preset.cpuAffinityGroup, preset.cpuAffinityMask,
-            preset.workingSetMinMB, preset.workingSetMaxMB);
+            launchExe, Utf8ToWide(gc.args),
+            applyOnLaunch ? preset.processPriorityClass : 0,
+            preset.cpuAffinityGroup,
+            applyOnLaunch ? preset.cpuAffinityMask : 0,
+            applyOnLaunch ? preset.workingSetMinMB : 0,
+            applyOnLaunch ? preset.workingSetMaxMB : 0);
         if (lr.ok) {
             pid = lr.pid;
-            os << "代启动: pid=" << lr.pid;
+            os << "代启动: pid=" << lr.pid
+               << (applyOnLaunch ? "" : "（未自动应用优化，仅启动）");
             if (!lr.error.empty()) os << "（非致命警告: " << lr.error << "）";
             os << "\n";
             CloseHandle(lr.hThread);
@@ -170,6 +191,19 @@ std::string AppCore::Rollback() {
     rollback_.StopWatchdog();
     const bool ok = rollback_.RollbackToLastSave();
     return ok ? "已回滚最近一次优化。" : "回滚失败或部分失败: " + rollback_.LastErrorText();
+}
+
+std::string AppCore::OptimizeAuto() {
+    // 一键：检测第一个运行中的支持游戏并应用其预设
+    for (const GameId id : kAllGames) {
+        if (FindProcessByExeName(GameExeName(id)) != 0) {
+            return OptimizeForGame(id);
+        }
+    }
+    std::ostringstream os;
+    os << "未检测到运行中的支持游戏。\n"
+       << "请先启动游戏，或用 game <name> --exe <路径> 配置优化启动后执行 optimize <name>。\n";
+    return os.str();
 }
 
 std::string AppCore::RollbackAll() {

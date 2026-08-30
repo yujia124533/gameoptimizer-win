@@ -24,6 +24,9 @@ public:
     // 全流程优化；返回人类可读结果（含失败 / 降级说明）
     std::string OptimizeForGame(GameId id);
 
+    // 一键优化：自动检测第一个运行中的支持游戏并应用其预设
+    std::string OptimizeAuto();
+
     // 回滚最近一次优化（并停止看门狗）
     std::string Rollback();
     // 全部回滚（并停止看门狗）

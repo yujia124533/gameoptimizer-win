@@ -20,6 +20,7 @@ add_library(gameopt_core STATIC
     src/hal/HAL.cpp
     src/preset/GameOptimizationPreset.cpp
     src/rollback/SecurityRollback.cpp
+    src/config/GameConfig.cpp
     src/license/License.cpp
     src/core/AppCore.cpp
 )

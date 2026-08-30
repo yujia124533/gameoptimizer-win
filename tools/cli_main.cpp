@@ -5,6 +5,7 @@
 #include <string>
 #include <thread>
 
+#include "config/GameConfig.h"
 #include "core/AppCore.h"
 #include "hal/HAL.h"
 #include "i18n.h"
@@ -13,7 +14,9 @@
 
 using gopt::AppConfig;
 using gopt::AppCore;
+using gopt::GameConfig;
 using gopt::GameId;
+using gopt::GameLaunchConfig;
 using gopt::Lang;
 using gopt::SetLang;
 using gopt::T;
@@ -105,6 +108,50 @@ int main(int argc, char** argv) {
 
     if (cmd == "--version" || cmd == "-v") {
         std::printf("GameOptimizer v%s\n", GOPT_VERSION_STR);
+        return 0;
+    }
+
+    // 每游戏「优化启动」配置（独立解析，避免与公共选项冲突）
+    if (cmd == "game") {
+        GameId id = GameId::DeltaForce;
+        bool haveGame = false;
+        GameLaunchConfig gc;
+        bool changed = false;
+        for (int i = 2; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--exe" && i + 1 < argc) { gc.exePath = argv[++i]; changed = true; }
+            else if (a == "--args" && i + 1 < argc) { gc.args = argv[++i]; changed = true; }
+            else if (a == "--power") { gc.powerScheme = true; changed = true; }
+            else if (a == "--no-power") { gc.powerScheme = false; changed = true; }
+            else if (a == "--auto") { gc.optimizedOnLaunch = true; changed = true; }
+            else if (a == "--no-auto") { gc.optimizedOnLaunch = false; changed = true; }
+            else if (a == "--latency") { gc.frameLatency = true; changed = true; }
+            else if (a == "--no-latency") { gc.frameLatency = false; changed = true; }
+            else if (a == "--ws") { gc.workingSet = true; changed = true; }
+            else if (a == "--no-ws") { gc.workingSet = false; changed = true; }
+            else if (!a.empty() && a[0] != '-' && !haveGame) {
+                if (ParseGame(a.c_str(), &id)) haveGame = true;
+            }
+        }
+        if (!haveGame) {
+            std::puts(T("用法: gopt_cli game <game> [--exe <路径>] [--args \"<参数>\"] "
+                        "[--power] [--no-power] [--auto] [--no-auto] [--latency] [--no-latency] [--ws] [--no-ws]",
+                        "Usage: gopt_cli game <game> [--exe <path>] [--args \"<...>\"] ..."));
+            return 1;
+        }
+        gc = changed ? (GameConfig::Set(id, gc) ? gc : GameConfig::Get(id))
+                     : GameConfig::Get(id);
+        std::printf("%s %s:\n"
+                    "  exe   : %s\n  args  : %s\n  auto  : %s\n  power : %s\n"
+                    "  frame : %s\n  wkset : %s\n  cfg   : %s\n",
+                    T("配置", "config"), gopt::GameIdToString(id).c_str(),
+                    gc.exePath.empty() ? T("(未设置)", "(unset)") : gc.exePath.c_str(),
+                    gc.args.empty() ? T("(无)", "(none)") : gc.args.c_str(),
+                    gc.optimizedOnLaunch ? T("开", "on") : T("关", "off"),
+                    gc.powerScheme ? T("开", "on") : T("关", "off"),
+                    gc.frameLatency ? T("开", "on") : T("关", "off"),
+                    gc.workingSet ? T("开", "on") : T("关", "off"),
+                    GameConfig::ConfigPath().c_str());
         return 0;
     }
 
@@ -208,6 +255,48 @@ int main(int argc, char** argv) {
         if (stable) {
             core.StopWatchdog();
             std::puts("监控结束：系统响应正常，优化保持生效。");
+        }
+        return 0;
+    }
+
+    if (cmd == "optimize") {
+        AppCore core(cfg);
+        if (gameArg.empty()) {
+            // 一键：自动检测运行中的支持游戏
+            std::puts(core.OptimizeAuto().c_str());
+        } else {
+            GameId id;
+            if (!ParseGame(gameArg.c_str(), &id)) {
+                std::printf(T("未知游戏: %s（支持 deltaforce / lol / cs2 等）\n",
+                              "Unknown game: %s (deltaforce / lol / cs2 ...)\n"),
+                            gameArg.c_str());
+                return 1;
+            }
+            cfg.gameExeOverride = gameExe;
+            AppCore core2(cfg);
+            std::puts(core2.OptimizeForGame(id).c_str());
+        }
+        if (!core.HasActiveOptimization()) {
+            std::puts(T("\n（未实际应用优化，已跳过监控）", "\n(not applied, skip monitor)"));
+            return 0;
+        }
+        std::puts(T("\n正在监控系统响应（最长 30 秒）...",
+                    "\nMonitoring system response (max 30s)..."));
+        bool stable = true;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (!core.IsStable()) {
+                stable = false;
+                std::printf(T("检测到系统响应异常，自动回滚: %s\n",
+                              "Abnormal system response, auto rollback: %s\n"),
+                            core.Rollback().c_str());
+                break;
+            }
+        }
+        if (stable) {
+            core.StopWatchdog();
+            std::puts(T("监控结束：系统响应正常，优化保持生效。",
+                        "Monitor done: system stable, optimization kept."));
         }
         return 0;
     }

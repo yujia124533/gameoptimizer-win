@@ -36,6 +36,7 @@ $windres = Join-Path $wbin "windres.exe"
     src\hal\HAL.cpp `
     src\preset\GameOptimizationPreset.cpp `
     src\rollback\SecurityRollback.cpp `
+    src\config\GameConfig.cpp `
     src\license\License.cpp `
     src\core\AppCore.cpp `
     tools\cli_main.cpp `
