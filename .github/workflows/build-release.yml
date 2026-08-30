@@ -1,0 +1,55 @@
+name: Build Release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # MSYS2 MinGW64 环境（gcc + windres），与本机 w64devkit 编译参数保持一致
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+
+      - name: Build release
+        shell: msys2 {0}
+        run: ./tools/build_release.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameOptimizer-release
+          path: |
+            release/GameOptimizer-portable.zip
+            release/GameOptimizer-setup.exe
+
+      # 打 v* tag 时自动创建 GitHub Release 并附带安装包
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/GameOptimizer-portable.zip
+            release/GameOptimizer-setup.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            GameOptimizer v${{ github.ref_name }}
+            - 安装包: GameOptimizer-setup.exe（GUI + CLI + 自检）
+            - 便携版: GameOptimizer-portable.zip
+            - 8 款游戏预设 | 免费/Pro 授权 | 一键回滚 | 无注入无 Hook
