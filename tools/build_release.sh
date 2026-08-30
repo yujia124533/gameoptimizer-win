@@ -27,21 +27,21 @@ EOF
 
 echo "== 编译 CLI =="
 windres resources/resource.rc -O coff -o build/resource.o
-g++ -std=c++17 -O2 -Isrc $SRCS tools/cli_main.cpp build/resource.o \
+g++ -std=c++17 -O2 -static -Isrc $SRCS tools/cli_main.cpp build/resource.o \
     -o build/gopt_cli.exe -ldxgi -ladvapi32 -lpowrprof
 
 echo "== 编译 GUI =="
-g++ -std=c++17 -O2 -Isrc src/gui/gopt_gui.cpp $SRCS build/resource.o \
+g++ -std=c++17 -O2 -static -Isrc src/gui/gopt_gui.cpp $SRCS build/resource.o \
     -o build/gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 \
     -ldxgi -ladvapi32 -lpowrprof
 
 echo "== 编译 自检程序 =="
-g++ -std=c++17 -O2 -Isrc $SRCS tools/verify_real.cpp \
+g++ -std=c++17 -O2 -static -Isrc $SRCS tools/verify_real.cpp \
     -o build/gopt_verify.exe -ldxgi -ladvapi32 -lpowrprof
 
 echo "== 编译 安装程序 =="
 windres resources/installer_resource.rc -O coff -o build/installer_resource.o
-g++ -std=c++17 -O2 resources/installer.cpp build/installer_resource.o \
+g++ -std=c++17 -O2 -static resources/installer.cpp build/installer_resource.o \
     -o build/GameOptimizer-setup.exe -lshell32 -lole32 -luser32 -ladvapi32 -luuid
 
 echo "== 打包 =="
