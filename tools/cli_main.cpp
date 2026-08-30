@@ -7,19 +7,22 @@
 
 #include "core/AppCore.h"
 #include "hal/HAL.h"
+#include "i18n.h"
 #include "license/License.h"
 #include "version.h"
 
 using gopt::AppConfig;
 using gopt::AppCore;
 using gopt::GameId;
+using gopt::Lang;
+using gopt::SetLang;
+using gopt::T;
 
 static void PrintUsage() {
-    std::printf("GameOptimizer 命令行 v%s (build %d.%d.%d)\n",
+    std::printf("GameOptimizer CLI v%s (build %d.%d.%d)\n",
                 GOPT_VERSION_STR, GOPT_VERSION_MAJOR, GOPT_VERSION_MINOR, GOPT_VERSION_PATCH);
-    std::puts(
-        "\n"
-        "用法:\n"
+    std::puts(T(
+        "\n用法:\n"
         "  gopt_cli status                      查看硬件指纹、预设与授权\n"
         "  gopt_cli apply <game> [选项]         应用优化（自动快照 + 看门狗监控）\n"
         "  gopt_cli rollback                    回滚最近一次优化\n"
@@ -28,15 +31,29 @@ static void PrintUsage() {
         "  gopt_cli license status              查看授权状态\n"
         "  gopt_cli license activate <code>     安装授权码\n"
         "  gopt_cli license gen <hash> <ed> [expiry]   开发者：为机器指纹生成授权码\n"
-        "\n"
-        "游戏: deltaforce | lol | cs2\n"
-        "\n"
-        "选项 (apply):\n"
+        "\n游戏: deltaforce | lol | cs2 | pubg | valorant | apex | dota2 | ow\n"
+        "\n选项 (apply):\n"
         "  --game-exe <path>   工具代启动游戏（CREATE_SUSPENDED → 设置 → Resume）\n"
         "  --power             允许切换高性能电源方案（Pro，需管理员，默认关闭）\n"
-        "\n"
-        "版本: 免费版 = 优先级 + CPU 亲和性；Pro = 额外支持 电源/驱动帧延迟/工作集。\n"
-        "安全边界: 无注入、无内核 Hook；优先级上限 HIGH；全部修改可一键回滚。");
+        "  --lang zh|en        界面语言（默认 zh）\n"
+        "\n版本: 免费版 = 优先级 + CPU 亲和性；Pro = 额外支持 电源/驱动帧延迟/工作集。\n"
+        "安全边界: 无注入、无内核 Hook；优先级上限 HIGH；全部修改可一键回滚。",
+        "\nUsage:\n"
+        "  gopt_cli status                      Show hardware, presets and license\n"
+        "  gopt_cli apply <game> [options]      Apply optimization (auto snapshot + watchdog)\n"
+        "  gopt_cli rollback                    Rollback the last optimization\n"
+        "  gopt_cli rollback-all                Rollback everything\n"
+        "  gopt_cli fingerprint                 Show machine fingerprint (for licensing)\n"
+        "  gopt_cli license status              Show license status\n"
+        "  gopt_cli license activate <code>     Install a license code\n"
+        "  gopt_cli license gen <hash> <ed> [expiry]   Dev: generate a license code\n"
+        "\nGames: deltaforce | lol | cs2 | pubg | valorant | apex | dota2 | ow\n"
+        "\nOptions (apply):\n"
+        "  --game-exe <path>   Tool starts the game (CREATE_SUSPENDED -> settings -> Resume)\n"
+        "  --power             Allow high-performance power scheme (Pro, admin, off by default)\n"
+        "  --lang zh|en        UI language (default zh)\n"
+        "\nFree = priority + CPU affinity; Pro adds power / frame latency / working set.\n"
+        "Safety: no injection, no kernel hooks; priority capped at HIGH; every change is rollable."));
 }
 
 // 解析游戏名（中英文别名），失败返回 false
@@ -100,6 +117,8 @@ int main(int argc, char** argv) {
             gameExe = argv[++i];
         } else if (a == "--power") {
             cfg.allowPowerSchemeSwitch = true;
+        } else if (a == "--lang" && i + 1 < argc) {
+            SetLang(std::string(argv[++i]) == "en" ? Lang::En : Lang::Zh);
         } else if (gameArg.empty() && !a.empty() && a[0] != '-') {
             gameArg = a;
         }
@@ -108,9 +127,10 @@ int main(int argc, char** argv) {
     if (cmd == "status") {
         AppCore core(cfg);
         const gopt::LicenseInfo li = core.License();
-        std::printf("授权   : %s（%s）\n", li.isPro ? "Pro" : "免费版", li.message.c_str());
+        std::printf("%s: %s (%s)\n", T("授权", "License"),
+                    li.isPro ? "Pro" : T("免费版", "Free"), li.message.c_str());
         std::puts(core.Profile().ToString().c_str());
-        std::puts("\n预设概览：");
+        std::puts(T("\n预设概览：", "\nPresets overview:"));
         for (const GameId id : {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,
                                 GameId::PUBG, GameId::Valorant, GameId::Apex,
                                 GameId::Dota2, GameId::Overwatch2}) {
@@ -119,11 +139,13 @@ int main(int argc, char** argv) {
         }
         GUID scheme{};
         if (gopt::HAL::QueryActivePowerScheme(&scheme)) {
-            std::printf("当前电源方案: %s\n", gopt::HAL::PowerSchemeName(scheme).c_str());
+            std::printf("%s: %s\n", T("当前电源方案", "Power scheme"),
+                        gopt::HAL::PowerSchemeName(scheme).c_str());
         }
-        std::printf("驱动级帧延迟配置: %s\n",
-                    gopt::HAL::IsDriverFrameLatencySupported(core.Profile()) ? "支持"
-                                                                             : "不支持（将降级跳过）");
+        std::printf("%s: %s\n", T("驱动级帧延迟配置", "Driver frame latency"),
+                    gopt::HAL::IsDriverFrameLatencySupported(core.Profile())
+                        ? T("支持", "supported")
+                        : T("不支持（将降级跳过）", "unsupported (degraded)"));
         return 0;
     }
 
