@@ -5,8 +5,21 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-00599c.svg)](#)
 [![Windows](https://img.shields.io/badge/Windows-x64-0078d4.svg)](#)
+[![Build](https://github.com/yujia124533/gameoptimizer-win/actions/workflows/build-release.yml/badge.svg)](https://github.com/yujia124533/gameoptimizer-win/actions)
+[![Release](https://img.shields.io/github/v/release/yujia124533/gameoptimizer-win?color=green)](https://github.com/yujia124533/gameoptimizer-win/releases)
+[![Stars](https://img.shields.io/github/stars/yujia124533/gameoptimizer-win?color=yellow)](https://github.com/yujia124533/gameoptimizer-win)
+[![GitHub](https://img.shields.io/badge/GitHub-repo-24292e)](https://github.com/yujia124533/gameoptimizer-win)
 
 自动识别 CPU/GPU/内存 → 按游戏预设应用进程优先级/CPU 亲和性/工作集/电源策略 → 每次修改自动快照，秒级回滚。
+
+## 🎉 v1.0.1 更新日志
+
+- **所有功能免费**：电源/帧延迟/工作集等全部优化项对所有人开放，无任何授权限制
+- **一键性能优化**：**无需先启动游戏**——自动检测运行中的游戏并优化；无游戏时做系统级性能优化
+- **每款游戏「优化启动」配置**：保存 exe 路径/启动参数/电源等开关，持久化到 `games.conf`
+- **现代化主题 GUI**：微软雅黑 UI 字体、顶部渐变标题栏、系统主题控件、一键大按钮
+- **中英双语界面**：GUI 下拉切换 / CLI `--lang en`
+- 8 款游戏：三角洲行动、英雄联盟、CS2、绝地求生、无畏契约、Apex Legends、Dota 2、守望先锋2
 
 ## 特性
 

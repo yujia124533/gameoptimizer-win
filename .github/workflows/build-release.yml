@@ -49,7 +49,16 @@ jobs:
           prerelease: false
           generate_release_notes: false
           body: |
-            GameOptimizer v${{ github.ref_name }}
-            - 安装包: GameOptimizer-setup.exe（GUI + CLI + 自检）
-            - 便携版: GameOptimizer-portable.zip
-            - 8 款游戏预设 | 免费/Pro 授权 | 一键回滚 | 无注入无 Hook
+            ## GameOptimizer v${{ github.ref_name }}
+
+            **所有功能免费** · 硬件无感 · 一键安全回滚 · 中英双语 · MIT 开源
+
+            - **一键性能优化**：无需先启动游戏（自动检测游戏 / 系统级优化）
+            - **8 款游戏**：三角洲行动、英雄联盟、CS2、绝地求生、无畏契约、Apex Legends、Dota 2、守望先锋2
+            - **每款游戏「优化启动」配置**：exe 路径 / 启动参数 / 电源等开关
+            - **安全**：仅官方 WinAPI，无注入、无内核 Hook，适合带反作弊游戏
+            - **现代化主题 GUI** + 完整 CLI
+
+            ### 下载
+            - `GameOptimizer-setup.exe`：安装包（GUI + CLI + 自检）
+            - `GameOptimizer-portable.zip`：免安装便携版
