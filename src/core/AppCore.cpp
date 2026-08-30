@@ -102,14 +102,8 @@ std::string AppCore::OptimizeForGame(GameId id) {
     const std::string gameName = GameIdToString(id);
     GamePreset preset = ResolvedPreset(id);
 
-    // 授权门控：免费版仅保留 优先级+亲和性；Pro 特性（帧延迟/工作集/电源）降级跳过
-    if (!license_.isPro) {
-        if (preset.gpuMaxFrames != 0) preset.gpuMaxFrames = 0;
-        if (preset.workingSetMinMB != 0) preset.workingSetMinMB = 0;
-        if (preset.workingSetMaxMB != 0) preset.workingSetMaxMB = 0;
-        if (preset.switchHighPerformancePower) preset.switchHighPerformancePower = false;
-    }
-    // 每游戏「优化启动」开关进一步门控
+    // 所有功能免费：无授权门控；优化项仅受系统能力限制（管理员/厂商库支持）
+    // 每游戏「优化启动」开关门控
     const GameLaunchConfig gc = GameConfig::Get(id);
     if (!gc.frameLatency) preset.gpuMaxFrames = 0;
     if (!gc.workingSet) {
@@ -120,8 +114,7 @@ std::string AppCore::OptimizeForGame(GameId id) {
 
     std::ostringstream os;
     os << "== 优化 " << gameName << " ==\n";
-    os << "版本: " << (license_.isPro ? "Pro" : "免费版")
-       << (license_.message.empty() ? "" : ("  " + license_.message)) << "\n";
+    os << "所有功能免费：全部优化项对所有人开放。\n";
     os << "预设: " << preset.description << "\n";
 
     // 1) 找到或代启动游戏进程（路径：CLI/GUI 显式 > 每游戏配置）
@@ -207,13 +200,7 @@ std::string AppCore::OptimizeAuto() {
 std::string AppCore::OptimizeSystem() {
     std::ostringstream os;
     os << "== 系统一键性能优化 ==\n";
-    os << "版本: " << (license_.isPro ? "Pro" : "免费版")
-       << (license_.message.empty() ? "" : ("  " + license_.message)) << "\n";
-    if (!license_.isPro) {
-        os << "电源方案切换是 Pro 功能（本机未授权，已跳过）。\n"
-           << "免费版请用：gopt_cli optimize <game>（代启动）或启动游戏后一键优化。\n";
-        return os.str();
-    }
+    os << "所有功能免费：全部优化项对所有人开放。\n";
     if (!config_.allowPowerSchemeSwitch) {
         os << "未启用电源方案切换（需勾选/--power）。启用后将无需游戏运行即可切高性能。\n";
         return os.str();
@@ -221,7 +208,7 @@ std::string AppCore::OptimizeSystem() {
     if (HAL::ActivateHighPerformanceScheme()) {
         os << "电源方案: 已切换高性能（无需游戏运行）。\n";
     } else {
-        os << "电源方案: 切换失败（" << HAL::LastErrorText() << "，可能需管理员）。\n";
+        os << "电源方案: 切换失败（" << HAL::LastErrorText() << "，可能需管理员权限）。\n";
     }
     return os.str();
 }

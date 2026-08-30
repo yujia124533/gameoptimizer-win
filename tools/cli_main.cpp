@@ -173,9 +173,8 @@ int main(int argc, char** argv) {
 
     if (cmd == "status") {
         AppCore core(cfg);
-        const gopt::LicenseInfo li = core.License();
-        std::printf("%s: %s (%s)\n", T("授权", "License"),
-                    li.isPro ? "Pro" : T("免费版", "Free"), li.message.c_str());
+        std::puts(T("所有功能免费：全部优化项对所有人开放。",
+                    "All features free: every optimization enabled for everyone."));
         std::puts(core.Profile().ToString().c_str());
         std::puts(T("\n预设概览：", "\nPresets overview:"));
         for (const GameId id : {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,

@@ -131,10 +131,9 @@ static void BrowsePath(HWND hwnd) {
 }
 
 static void LogIntro() {
-    const LicenseInfo li = gopt::License::Check(g_core->Profile());
     AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + "\n");
-    AddLog(std::string(T("授权: ", "License: ")) + (li.isPro ? "Pro" : T("免费版", "Free"))
-           + "  " + li.message + "\n");
+    AddLog(T("所有功能免费：全部优化项对所有人开放。\n",
+             "All features free: every optimization enabled for everyone.\n"));
     AddLog(T("一键优化 = 自动检测运行中的游戏并应用；或选游戏后点”应用优化“。\n",
              "One-click = auto-detect & optimize; or select a game then Apply.\n"));
     AddLog(T("为每款游戏保存启动路径/参数/电源开关（保存游戏设置），即可一键优化启动。\n\n",
@@ -247,9 +246,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 AddLog("\n\n");
                 delete core;
             } else if (id == IDC_REFRESH) {
-                const LicenseInfo li = gopt::License::Check(g_core->Profile());
-                AddLog(std::string(T("授权: ", "License: ")) + (li.isPro ? "Pro" : T("免费版", "Free"))
-                       + "  " + li.message + "\n");
+                AddLog(T("所有功能免费：全部优化项对所有人开放。\n",
+                         "All features free: every optimization enabled for everyone.\n"));
                 AddLog(g_core->Profile().ToString());
                 AddLog("\n\n");
             }
