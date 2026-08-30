@@ -1,0 +1,207 @@
+// GameOptimizer 命令行入口（第 5 步：AppCore 协调层 + CLI，发布版）
+#include <cctype>
+#include <chrono>
+#include <cstdio>
+#include <string>
+#include <thread>
+
+#include "core/AppCore.h"
+#include "hal/HAL.h"
+#include "license/License.h"
+#include "version.h"
+
+using gopt::AppConfig;
+using gopt::AppCore;
+using gopt::GameId;
+
+static void PrintUsage() {
+    std::printf("GameOptimizer 命令行 v%s (build %d.%d.%d)\n",
+                GOPT_VERSION_STR, GOPT_VERSION_MAJOR, GOPT_VERSION_MINOR, GOPT_VERSION_PATCH);
+    std::puts(
+        "\n"
+        "用法:\n"
+        "  gopt_cli status                      查看硬件指纹、预设与授权\n"
+        "  gopt_cli apply <game> [选项]         应用优化（自动快照 + 看门狗监控）\n"
+        "  gopt_cli rollback                    回滚最近一次优化\n"
+        "  gopt_cli rollback-all                回滚全部\n"
+        "  gopt_cli fingerprint                 显示本机机器指纹（授权绑定用）\n"
+        "  gopt_cli license status              查看授权状态\n"
+        "  gopt_cli license activate <code>     安装授权码\n"
+        "  gopt_cli license gen <hash> <ed> [expiry]   开发者：为机器指纹生成授权码\n"
+        "\n"
+        "游戏: deltaforce | lol | cs2\n"
+        "\n"
+        "选项 (apply):\n"
+        "  --game-exe <path>   工具代启动游戏（CREATE_SUSPENDED → 设置 → Resume）\n"
+        "  --power             允许切换高性能电源方案（Pro，需管理员，默认关闭）\n"
+        "\n"
+        "版本: 免费版 = 优先级 + CPU 亲和性；Pro = 额外支持 电源/驱动帧延迟/工作集。\n"
+        "安全边界: 无注入、无内核 Hook；优先级上限 HIGH；全部修改可一键回滚。");
+}
+
+// 解析游戏名（中英文别名），失败返回 false
+static bool ParseGame(const char* s, GameId* out) {
+    if (!s || !*s) return false;
+    std::string v(s);
+    for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (v == "deltaforce" || v == "df" || v == "三角洲" || v == "三角洲行动") {
+        *out = GameId::DeltaForce;
+        return true;
+    }
+    if (v == "lol" || v == "league" || v == "lol1" || v == "英雄联盟") {
+        *out = GameId::LeagueOfLegends;
+        return true;
+    }
+    if (v == "cs2" || v == "cs") {
+        *out = GameId::CS2;
+        return true;
+    }
+    if (v == "pubg" || v == "吃鸡" || v == "绝地求生") {
+        *out = GameId::PUBG;
+        return true;
+    }
+    if (v == "valorant" || v == "无畏" || v == "无畏契约") {
+        *out = GameId::Valorant;
+        return true;
+    }
+    if (v == "apex" || v == "apexlegends") {
+        *out = GameId::Apex;
+        return true;
+    }
+    if (v == "dota" || v == "dota2") {
+        *out = GameId::Dota2;
+        return true;
+    }
+    if (v == "ow" || v == "ow2" || v == "overwatch" || v == "守望") {
+        *out = GameId::Overwatch2;
+        return true;
+    }
+    return false;
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        PrintUsage();
+        return 0;
+    }
+    const std::string cmd = argv[1];
+
+    if (cmd == "--version" || cmd == "-v") {
+        std::printf("GameOptimizer v%s\n", GOPT_VERSION_STR);
+        return 0;
+    }
+
+    // 解析公共选项
+    std::string gameArg, gameExe;
+    AppConfig cfg;
+    for (int i = 2; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--game-exe" && i + 1 < argc) {
+            gameExe = argv[++i];
+        } else if (a == "--power") {
+            cfg.allowPowerSchemeSwitch = true;
+        } else if (gameArg.empty() && !a.empty() && a[0] != '-') {
+            gameArg = a;
+        }
+    }
+
+    if (cmd == "status") {
+        AppCore core(cfg);
+        const gopt::LicenseInfo li = core.License();
+        std::printf("授权   : %s（%s）\n", li.isPro ? "Pro" : "免费版", li.message.c_str());
+        std::puts(core.Profile().ToString().c_str());
+        std::puts("\n预设概览：");
+        for (const GameId id : {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,
+                                GameId::PUBG, GameId::Valorant, GameId::Apex,
+                                GameId::Dota2, GameId::Overwatch2}) {
+            const gopt::GamePreset p = core.ResolvedPreset(id);
+            std::printf("  %-10s %s\n", gopt::GameIdToString(id).c_str(), p.description.c_str());
+        }
+        GUID scheme{};
+        if (gopt::HAL::QueryActivePowerScheme(&scheme)) {
+            std::printf("当前电源方案: %s\n", gopt::HAL::PowerSchemeName(scheme).c_str());
+        }
+        std::printf("驱动级帧延迟配置: %s\n",
+                    gopt::HAL::IsDriverFrameLatencySupported(core.Profile()) ? "支持"
+                                                                             : "不支持（将降级跳过）");
+        return 0;
+    }
+
+    if (cmd == "fingerprint") {
+        AppCore core(cfg);
+        const gopt::MachineFingerprint mf = gopt::ComputeMachineFingerprint(core.Profile());
+        std::printf("本机机器指纹:\n  主板序列号 : %s\n  指纹哈希   : %s\n",
+                    mf.boardSerial.empty() ? "(未读出)" : mf.boardSerial.c_str(),
+                    mf.hash.c_str());
+        return 0;
+    }
+
+    if (cmd == "license" && argc >= 3) {
+        const std::string sub = argv[2];
+        AppCore core(cfg);
+        if (sub == "status") {
+            const gopt::LicenseInfo li = gopt::License::Check(core.Profile());
+            std::printf("授权状态:\n  %s\n  %s\n", li.valid ? "有效" : "无效/未激活",
+                        li.message.c_str());
+            return 0;
+        }
+        if (sub == "activate" && argc >= 4) {
+            const gopt::LicenseInfo li = gopt::License::Activate(argv[3], core.Profile());
+            std::printf("激活结果: %s\n", li.message.c_str());
+            return li.valid ? 0 : 1;
+        }
+        if (sub == "gen" && argc >= 5) {
+            const std::string code = gopt::License::Generate(
+                argv[3], argv[4], argc >= 6 ? argv[5] : "permanent");
+            std::printf("授权码:\n%s\n", code.c_str());
+            return 0;
+        }
+    }
+
+    if (cmd == "apply") {
+        GameId id;
+        if (!ParseGame(gameArg.c_str(), &id)) {
+            std::printf("未知游戏: %s（支持 deltaforce / lol / cs2）\n", gameArg.c_str());
+            return 1;
+        }
+        cfg.gameExeOverride = gameExe;
+        AppCore core(cfg);
+        std::puts(core.OptimizeForGame(id).c_str());
+
+        if (!core.HasActiveOptimization()) {
+            std::puts("\n（未实际应用优化，已跳过监控）");
+            return 0;
+        }
+
+        std::puts("\n正在监控系统响应（最长 30 秒）...");
+        bool stable = true;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (!core.IsStable()) {
+                stable = false;
+                std::printf("检测到系统响应异常，自动回滚: %s\n", core.Rollback().c_str());
+                break;
+            }
+        }
+        if (stable) {
+            core.StopWatchdog();
+            std::puts("监控结束：系统响应正常，优化保持生效。");
+        }
+        return 0;
+    }
+
+    if (cmd == "rollback") {
+        AppCore core(cfg);
+        std::puts(core.Rollback().c_str());
+        return 0;
+    }
+
+    if (cmd == "rollback-all") {
+        AppCore core(cfg);
+        std::puts(core.RollbackAll().c_str());
+        return 0;
+    }
+
+    PrintUsage();
+    return 0;
+}

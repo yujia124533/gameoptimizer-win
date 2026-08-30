@@ -1,0 +1,14 @@
+# 构建产物
+build/
+# 本地工具链（w64devkit / nsis）
+toolchains/
+# 发布产物（生成）
+release/GameOptimizer-portable.zip
+release/GameOptimizer-setup.exe
+release/GameOptimizer/
+# 运行时用户数据
+*.license.dat
+savepoints.txt
+# 临时
+*.o
+*.exe.tmp

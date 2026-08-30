@@ -1,0 +1,8 @@
+#include <winver.h>
+
+1 ICON "resources\\icon.ico"
+
+1 RCDATA "build\\gopt_cli.exe"
+2 RCDATA "build\\gopt_verify.exe"
+3 RCDATA "release\\GameOptimizer\\BEFORE_USE_README.txt"
+4 RCDATA "build\\gopt_gui.exe"
