@@ -111,9 +111,9 @@ static int RunInstall() {
 
     CoUninitialize();
     MessageBoxW(nullptr,
-                L"GameOptimizer v1.0.0 安装完成！\n"
-                L"使用：开始菜单 -> GameOptimizer，或运行\n"
-                L"%LOCALAPPDATA%\\GameOptimizer\\gopt_cli.exe\n",
+                L"GameOptimizer v1.0.1 安装完成！\n"
+                L"所有功能免费。使用：开始菜单 -> GameOptimizer，或运行\n"
+                L"%LOCALAPPDATA%\\GameOptimizer\\gopt_gui.exe\n",
                 L"GameOptimizer", MB_OK | MB_ICONINFORMATION);
     return 0;
 }
