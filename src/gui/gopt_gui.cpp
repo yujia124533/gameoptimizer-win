@@ -29,6 +29,7 @@ static HWND g_combo, g_lang, g_path, g_args, g_power, g_log;
 static HWND g_btnApply, g_btnRollback, g_btnRefresh, g_btnBrowse;
 static HWND g_btnAuto, g_btnSave;
 static AppCore* g_core = nullptr;
+static HFONT g_font = nullptr;
 
 enum { IDC_APPLY = 101, IDC_ROLLBACK = 102, IDC_REFRESH = 103, IDC_POWER = 104,
        IDC_BROWSE = 105, IDC_LANG = 106, IDC_AUTO = 107, IDC_SAVE = 108 };
@@ -144,32 +145,34 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             const HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetModuleHandleW(nullptr));
-            g_combo = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                      CBS_DROPDOWNLIST, 16, 14, 170, 220, hwnd, nullptr, hInst, nullptr);
-            g_lang = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
-                                      CBS_DROPDOWNLIST, 192, 14, 72, 120, hwnd,
-                                      reinterpret_cast<HMENU>(IDC_LANG), hInst, nullptr);
-            g_btnApply = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE, 274, 14, 110, 26,
-                                         hwnd, reinterpret_cast<HMENU>(IDC_APPLY), hInst, nullptr);
-            g_path = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                     16, 46, 150, 24, hwnd, nullptr, hInst, nullptr);
-            g_btnBrowse = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE, 172, 46, 50, 24,
-                                          hwnd, reinterpret_cast<HMENU>(IDC_BROWSE), hInst, nullptr);
-            g_btnRollback = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE, 274, 46, 110, 26,
-                                            hwnd, reinterpret_cast<HMENU>(IDC_ROLLBACK), hInst, nullptr);
-            g_args = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                                     16, 78, 200, 24, hwnd, nullptr, hInst, nullptr);
-            g_btnSave = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE, 274, 78, 110, 26,
-                                        hwnd, reinterpret_cast<HMENU>(IDC_SAVE), hInst, nullptr);
-            g_power = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                      16, 110, 250, 22, hwnd, reinterpret_cast<HMENU>(IDC_POWER), hInst, nullptr);
-            g_btnRefresh = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE, 274, 110, 110, 26,
-                                           hwnd, reinterpret_cast<HMENU>(IDC_REFRESH), hInst, nullptr);
-            g_btnAuto = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE, 16, 140, 150, 28,
-                                        hwnd, reinterpret_cast<HMENU>(IDC_AUTO), hInst, nullptr);
-            g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
-                                    ES_READONLY | WS_VSCROLL, 16, 176, 368, 190, hwnd, nullptr, hInst, nullptr);
+            // 字体：微软雅黑 UI（Win10+），并让标准控件走现代主题（manifest 已启用 v6 控件）
+            if (!g_font) {
+                g_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                     CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            }
+            auto makeCtl = [&](const wchar_t* cls, const wchar_t* text, DWORD style,
+                               int x, int y, int w, int h, int id, DWORD exStyle = 0) {
+                HWND c = CreateWindowExW(exStyle, cls, text, style | WS_CHILD | WS_VISIBLE,
+                                         x, y, w, h, hwnd, reinterpret_cast<HMENU>(id), hInst, nullptr);
+                if (c && g_font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+                return c;
+            };
+            g_combo = makeCtl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 16, 64, 170, 220, 0);
+            g_lang = makeCtl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 192, 64, 72, 120, IDC_LANG);
+            g_btnApply = makeCtl(L"BUTTON", L"", 0, 274, 64, 110, 28, IDC_APPLY);
+            g_path = makeCtl(L"EDIT", L"", WS_TABSTOP, 16, 98, 150, 26, 0, WS_EX_CLIENTEDGE);
+            g_btnBrowse = makeCtl(L"BUTTON", L"", 0, 172, 98, 50, 26, IDC_BROWSE);
+            g_btnRollback = makeCtl(L"BUTTON", L"", 0, 274, 98, 110, 28, IDC_ROLLBACK);
+            g_args = makeCtl(L"EDIT", L"", WS_TABSTOP, 16, 130, 200, 26, 0, WS_EX_CLIENTEDGE);
+            g_btnSave = makeCtl(L"BUTTON", L"", 0, 274, 130, 110, 28, IDC_SAVE);
+            g_power = makeCtl(L"BUTTON", L"", BS_AUTOCHECKBOX, 16, 162, 250, 24, IDC_POWER);
+            g_btnRefresh = makeCtl(L"BUTTON", L"", 0, 274, 162, 110, 28, IDC_REFRESH);
+            g_btnAuto = makeCtl(L"BUTTON", L"", 0, 16, 192, 150, 30, IDC_AUTO);
+            g_log = makeCtl(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+                            16, 232, 368, 190, 0, WS_EX_CLIENTEDGE);
+            // 让按钮/勾选使用系统主题外观
+            SendMessageW(g_power, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
 
             RefreshGameList();
             SendMessageW(g_lang, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"中文"));
@@ -178,6 +181,34 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ApplyLanguage();
             LogIntro();
         } break;
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            // 顶部标题带（蓝色渐变感：双色块）
+            RECT hdr{0, 0, rc.right, 52};
+            HBRUSH b1 = CreateSolidBrush(RGB(37, 99, 235));
+            FillRect(dc, &hdr, b1);
+            DeleteObject(b1);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(255, 255, 255));
+            const HFONT old = static_cast<HFONT>(SelectObject(dc, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT)));
+            RECT tr{14, 6, rc.right - 14, 46};
+            DrawTextW(dc, L"GameOptimizer", -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SelectObject(dc, old);
+            EndPaint(hwnd, &ps);
+        } break;
+
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX: {
+            SetTextColor(reinterpret_cast<HDC>(wp), RGB(30, 30, 30));
+            SetBkColor(reinterpret_cast<HDC>(wp), RGB(255, 255, 255));
+            static HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
+            return reinterpret_cast<LRESULT>(white);
+        }
 
         case WM_COMMAND: {
             const int id = LOWORD(wp);
@@ -227,10 +258,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE: {
             RECT rc{};
             GetClientRect(hwnd, &rc);
-            MoveWindow(g_log, 16, 176, rc.right - 32, rc.bottom - 192, TRUE);
+            MoveWindow(g_log, 16, 232, rc.right - 32, rc.bottom - 248, TRUE);
         } break;
 
         case WM_DESTROY:
+            if (g_font) {
+                DeleteObject(g_font);
+                g_font = nullptr;
+            }
             PostQuitMessage(0);
             break;
 
@@ -254,7 +289,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
 
     HWND hwnd = CreateWindowExW(0, cls, L"GameOptimizer" L" v" GOPT_VERSION_STR,
                                 WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                                400, 400, nullptr, nullptr, hInst, nullptr);
+                                400, 440, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 0;
     ShowWindow(hwnd, nShow);
     UpdateWindow(hwnd);

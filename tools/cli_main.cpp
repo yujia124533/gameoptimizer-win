@@ -262,8 +262,10 @@ int main(int argc, char** argv) {
     if (cmd == "optimize") {
         AppCore core(cfg);
         if (gameArg.empty()) {
-            // 一键：自动检测运行中的支持游戏
+            // 一键：有运行中的游戏→优化游戏；否则系统级性能优化（无需游戏）
             std::puts(core.OptimizeAuto().c_str());
+        } else if (gameArg == "system" || gameArg == "sys") {
+            std::puts(core.OptimizeSystem().c_str());
         } else {
             GameId id;
             if (!ParseGame(gameArg.c_str(), &id)) {

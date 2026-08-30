@@ -1,6 +1,7 @@
 #include <winver.h>
 
 1 ICON "resources\\icon.ico"
+1 24 "resources\\manifest.xml"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION     1,0,0,0

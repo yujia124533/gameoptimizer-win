@@ -200,9 +200,29 @@ std::string AppCore::OptimizeAuto() {
             return OptimizeForGame(id);
         }
     }
+    // 无游戏运行 → 系统级一键性能优化（无需先启动游戏）
+    return OptimizeSystem();
+}
+
+std::string AppCore::OptimizeSystem() {
     std::ostringstream os;
-    os << "未检测到运行中的支持游戏。\n"
-       << "请先启动游戏，或用 game <name> --exe <路径> 配置优化启动后执行 optimize <name>。\n";
+    os << "== 系统一键性能优化 ==\n";
+    os << "版本: " << (license_.isPro ? "Pro" : "免费版")
+       << (license_.message.empty() ? "" : ("  " + license_.message)) << "\n";
+    if (!license_.isPro) {
+        os << "电源方案切换是 Pro 功能（本机未授权，已跳过）。\n"
+           << "免费版请用：gopt_cli optimize <game>（代启动）或启动游戏后一键优化。\n";
+        return os.str();
+    }
+    if (!config_.allowPowerSchemeSwitch) {
+        os << "未启用电源方案切换（需勾选/--power）。启用后将无需游戏运行即可切高性能。\n";
+        return os.str();
+    }
+    if (HAL::ActivateHighPerformanceScheme()) {
+        os << "电源方案: 已切换高性能（无需游戏运行）。\n";
+    } else {
+        os << "电源方案: 切换失败（" << HAL::LastErrorText() << "，可能需管理员）。\n";
+    }
     return os.str();
 }
 
