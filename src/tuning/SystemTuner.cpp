@@ -171,7 +171,13 @@ std::string SystemTuner::Tune(const HardwareProfile& hw, bool highPerf) {
     } else {
         os << "  [3] 系统调度优先级: 设置失败（需管理员权限）\n";
     }
-    os << "  已生成调优快照，可用「恢复调优」还原。\n";
+    // 结果摘要
+    os << "\n== 完成 ==\n";
+    os << "  已应用：电源方案=" << (highPerf ? "高性能" : "平衡")
+       << " · 处理器最小 " << minState << "% / 最大 " << maxState
+       << "% / 增强模式 " << boostMode << (highPerf ? "（激进）" : "（常规）")
+       << " · 调度优先级=" << (highPerf ? "0x26 游戏优先" : "0x2 标准") << "\n";
+    os << "  已生成调优快照；如需还原点「恢复调优」或执行 tune restore。\n";
     return os.str();
 }
 

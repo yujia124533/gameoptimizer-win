@@ -48,6 +48,30 @@ std::string WideToUtf8(const wchar_t* wstr) {
     return s;
 }
 
+// 优先级类名（含数值，便于用户看懂做了什么）
+std::string PriorityName(DWORD c) {
+    switch (c) {
+        case HIGH_PRIORITY_CLASS:         return "High (0x80)";
+        case ABOVE_NORMAL_PRIORITY_CLASS: return "AboveNormal (0x8000)";
+        case NORMAL_PRIORITY_CLASS:       return "Normal (0x20)";
+        case BELOW_NORMAL_PRIORITY_CLASS: return "BelowNormal (0x4000)";
+        case IDLE_PRIORITY_CLASS:         return "Idle (0x40)";
+        default:                          return "Class(0x" + std::to_string(c) + ")";
+    }
+}
+
+int PopCount(uint64_t v) {
+    int n = 0;
+    while (v) { v &= v - 1; ++n; }
+    return n;
+}
+
+std::string HexU64(uint64_t v) {
+    char buf[24] = {};
+    std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(v));
+    return buf;
+}
+
 // 按可执行文件名查找运行中的进程 PID（大小写不敏感，返回首个匹配）
 uint32_t FindProcessByExeName(const std::wstring& exeName) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -192,25 +216,33 @@ std::string AppCore::OptimizeForGame(GameId id, const FlowCallback& cb, int step
     finish(step, "快照", true, static_cast<int>(now() - tSnap));
     ++step;
 
-    // [3..] 逐项应用：每步独立执行并计时（真实耗时），失败不中断
+    // [3..] 逐项应用：每步独立执行并计时（真实耗时），失败不中断；步骤名带实际数值
     HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
                            FALSE, pid);
+    int appliedCount = 0;
     auto applyItem = [&](const std::string& label, auto&& fn) {
         start(step, label);
         const int64_t t0 = now();
         const bool ok = fn();
+        if (ok) ++appliedCount;
         finish(step, label, ok, static_cast<int>(now() - t0));
         ++step;
     };
     if (h != nullptr) {
         if (preset.processPriorityClass != 0)
-            applyItem("进程优先级", [&] { return HAL::SetProcessPriority(h, preset.processPriorityClass); });
+            applyItem("进程优先级 → " + PriorityName(preset.processPriorityClass),
+                      [&] { return HAL::SetProcessPriority(h, preset.processPriorityClass); });
         if (preset.cpuAffinityMask != 0)
-            applyItem("CPU 亲和性", [&] { return HAL::SetProcessAffinity(h, preset.cpuAffinityGroup, preset.cpuAffinityMask); });
+            applyItem("CPU 亲和性 → 掩码 " + HexU64(preset.cpuAffinityMask) + "（"
+                      + std::to_string(PopCount(preset.cpuAffinityMask)) + " 个逻辑核"
+                      + (preset.leaveCoresForSystem >= 0 ? ("，保留 " + std::to_string(preset.leaveCoresForSystem) + " 核给系统") : "") + "）",
+                      [&] { return HAL::SetProcessAffinity(h, preset.cpuAffinityGroup, preset.cpuAffinityMask); });
         if (preset.workingSetMinMB != 0 || preset.workingSetMaxMB != 0)
-            applyItem("工作集", [&] { return HAL::SetProcessWorkingSetMB(h, preset.workingSetMinMB, preset.workingSetMaxMB); });
+            applyItem("工作集 → 下限 " + std::to_string(preset.workingSetMinMB) + " MB（上限不限制）",
+                      [&] { return HAL::SetProcessWorkingSetMB(h, preset.workingSetMinMB, preset.workingSetMaxMB); });
         if (preset.switchHighPerformancePower)
-            applyItem("电源方案（高性能）", [&] { return HAL::ActivateHighPerformanceScheme(); });
+            applyItem("电源方案 → 高性能",
+                      [&] { return HAL::ActivateHighPerformanceScheme(); });
         CloseHandle(h);
     } else {
         start(step, "应用优化");
@@ -223,6 +255,13 @@ std::string AppCore::OptimizeForGame(GameId id, const FlowCallback& cb, int step
     SecurityRollback::WatchdogConfig wc;
     rollback_.StartWatchdog(wc);
     finish(step, "看门狗", true, 0);
+    ++step;
+
+    // 结果摘要（点一下就知道干了什么）
+    info("");
+    info("== 完成 ==");
+    info("  已应用优化 " + std::to_string(appliedCount) + " 项；已生成快照（回滚可恢复）；");
+    info("  看门狗运行中（10 秒宽限期，系统响应异常将自动回滚）。");
     return os.str();
 }
 
