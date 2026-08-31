@@ -9,6 +9,7 @@
 #include "core/AppCore.h"
 #include "i18n.h"
 #include "license/License.h"
+#include "tuning/SystemTuner.h"
 #include "version.h"
 
 using gopt::AppConfig;
@@ -27,12 +28,13 @@ static const GameId kGames[] = {GameId::DeltaForce, GameId::LeagueOfLegends, Gam
 
 static HWND g_combo, g_lang, g_path, g_args, g_power, g_log;
 static HWND g_btnApply, g_btnRollback, g_btnRefresh, g_btnBrowse;
-static HWND g_btnAuto, g_btnSave;
+static HWND g_btnAuto, g_btnSave, g_btnTune, g_btnRestoreTune;
 static AppCore* g_core = nullptr;
 static HFONT g_font = nullptr;
 
 enum { IDC_APPLY = 101, IDC_ROLLBACK = 102, IDC_REFRESH = 103, IDC_POWER = 104,
-       IDC_BROWSE = 105, IDC_LANG = 106, IDC_AUTO = 107, IDC_SAVE = 108 };
+       IDC_BROWSE = 105, IDC_LANG = 106, IDC_AUTO = 107, IDC_SAVE = 108,
+       IDC_TUNE = 109, IDC_RESTORETUNE = 110 };
 
 static std::wstring Utf8ToWide(const std::string& s) {
     if (s.empty()) return {};
@@ -121,6 +123,8 @@ static void ApplyLanguage() {
     SetText(g_btnBrowse, "浏览...", "Browse...");
     SetText(g_btnAuto, "一键优化", "One-click Optimize");
     SetText(g_btnSave, "保存游戏设置", "Save Settings");
+    SetText(g_btnTune, "性能调优", "System Tune");
+    SetText(g_btnRestoreTune, "恢复调优", "Restore Tune");
     SetText(g_power, "启用电源方案切换 (Pro)", "Enable power scheme switch (Pro)");
 }
 
@@ -203,6 +207,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_power = makeCtl(L"BUTTON", L"", BS_AUTOCHECKBOX, 16, 172, 250, 24, IDC_POWER);
             g_btnRefresh = makeCtl(L"BUTTON", L"", 0, 274, 172, 110, 28, IDC_REFRESH);
             g_btnAuto = makeCtl(L"BUTTON", L"", 0, 16, 202, 150, 30, IDC_AUTO);
+            g_btnTune = makeCtl(L"BUTTON", L"", 0, 178, 202, 90, 30, IDC_TUNE);
+            g_btnRestoreTune = makeCtl(L"BUTTON", L"", 0, 274, 202, 110, 30, IDC_RESTORETUNE);
             g_log = makeCtl(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
                             16, 242, 368, 180, 0, WS_EX_CLIENTEDGE);
             // 让按钮/勾选使用系统主题外观
@@ -287,6 +293,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 AppCore* core = MakeCore();
                 AddLog(std::string(T("== 一键优化 ==\n", "== One-click optimize ==\n")));
                 core->OptimizeAuto([](const gopt::AppCore::FlowEvent& e) { RenderFlowEvent(e); }, 350);
+                AddLog("\n\n");
+                delete core;
+            } else if (id == IDC_TUNE) {
+                AppCore* core = MakeCore();
+                const bool high = gopt::SystemTuner::RecommendHighPerf(core->Profile());
+                AddLog(std::string(T("== 系统性能调优 ==\n", "== System tune ==\n")));
+                AddLog(core->TuneSystem(high));
+                AddLog("\n\n");
+                delete core;
+            } else if (id == IDC_RESTORETUNE) {
+                AppCore* core = MakeCore();
+                AddLog(core->RestoreTune());
                 AddLog("\n\n");
                 delete core;
             } else if (id == IDC_ROLLBACK) {

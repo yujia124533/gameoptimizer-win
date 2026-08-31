@@ -10,6 +10,7 @@
 #include "hal/HAL.h"
 #include "i18n.h"
 #include "license/License.h"
+#include "tuning/SystemTuner.h"
 #include "version.h"
 
 using gopt::AppConfig;
@@ -299,6 +300,23 @@ int main(int argc, char** argv) {
             std::puts(T("监控结束：系统响应正常，优化保持生效。",
                         "Monitor done: system stable, optimization kept."));
         }
+        return 0;
+    }
+
+    if (cmd == "tune") {
+        AppCore core(cfg);
+        const std::string sub = gameArg;
+        if (sub == "restore") {
+            std::puts(core.RestoreTune().c_str());
+            return 0;
+        }
+        bool high = gopt::SystemTuner::RecommendHighPerf(core.Profile());
+        if (sub == "high") high = true;
+        else if (sub == "balanced" || sub == "balance") high = false;
+        else if (sub.empty())
+            std::printf("%s\n", high ? T("（依据硬件推荐：高性能档）", "(hardware suggests: high-performance)")
+                                     : T("（依据硬件推荐：平衡档）", "(hardware suggests: balanced)"));
+        std::puts(core.TuneSystem(high).c_str());
         return 0;
     }
 

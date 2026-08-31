@@ -23,6 +23,7 @@
 #include "config/GameConfig.h"
 #include "hal/HAL.h"
 #include "hardware/HardwareDetector.h"
+#include "tuning/SystemTuner.h"
 
 namespace gopt {
 
@@ -282,6 +283,14 @@ std::string AppCore::OptimizeSystem() {
         os << "电源方案: 切换失败（" << HAL::LastErrorText() << "，可能需管理员权限）。\n";
     }
     return os.str();
+}
+
+std::string AppCore::TuneSystem(bool highPerf) {
+    return SystemTuner::Tune(cachedProfile_, highPerf);
+}
+
+std::string AppCore::RestoreTune() {
+    return SystemTuner::Restore();
 }
 
 std::string AppCore::RollbackAll() {

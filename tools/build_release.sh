@@ -7,6 +7,7 @@ set -euo pipefail
 SRCS="src/hardware/HardwareProfile.cpp src/hardware/HardwareDetector.cpp \
 src/hal/HAL.cpp src/preset/GameOptimizationPreset.cpp \
 src/rollback/SecurityRollback.cpp src/config/GameConfig.cpp \
+src/tuning/SystemTuner.cpp \
 src/license/License.cpp src/core/AppCore.cpp"
 
 mkdir -p build release/GameOptimizer

@@ -42,6 +42,11 @@ public:
     // 系统级一键性能优化（无需游戏运行）：高性能电源方案等
     std::string OptimizeSystem();
 
+    // 系统级性能调优（BoosterX 风格：电源方案/处理器性能档/调度优先级）
+    std::string TuneSystem(bool highPerf);
+    // 恢复最近一次系统调优
+    std::string RestoreTune();
+
     // 回滚最近一次优化（并停止看门狗）
     std::string Rollback();
     // 全部回滚（并停止看门狗）
