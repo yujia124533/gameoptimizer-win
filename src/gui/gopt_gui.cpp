@@ -42,7 +42,11 @@ static HWND g_btnTuneHigh, g_btnTuneBal, g_btnTuneRestore;
 // 进程页
 static HWND g_listProc, g_btnProcRefresh;
 // 启动项页
-static HWND g_listStartup, g_btnStartupRefresh, g_btnStartupDisable, g_btnStartupEnable;
+static HWND g_listStartup, g_btnStartupRefresh, g_btnStartupDisable, g_btnStartupEnable, g_btnStartupRestore;
+// 总览卡片
+static HWND g_dashHelp, g_dashCpu, g_dashGpu, g_dashRam, g_dashNote;
+// 每页操作提示
+static HWND g_hint1, g_hint2, g_hint3, g_hint4;
 
 static int g_page = 0;
 static HFONT g_font = nullptr, g_fontBold = nullptr, g_fontBig = nullptr;
@@ -60,7 +64,8 @@ enum {
     IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309,
     IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403,
     IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502,
-    IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603, IDC_STARTUP_ENABLE = 604,
+    IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
+    IDC_STARTUP_ENABLE = 604, IDC_STARTUP_RESTORE = 605,
 };
 
 #define WM_APP_UIEVENT (WM_APP + 1)
@@ -227,9 +232,22 @@ static void RefreshStartupList() {
     } else {
         for (const auto& e : g_startups)
             SendMessageW(g_listStartup, LB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(Utf8ToWide(T("[%1]", "[%1]") + e.hive + "] " + e.name).c_str()));
+                         reinterpret_cast<LPARAM>(Utf8ToWide("[" + e.hive + "] " + e.name).c_str()));
     }
     SendMessageW(g_listStartup, LB_SETCURSEL, 0, 0);
+}
+
+static void UpdateDashboard() {
+    if (!g_core || !g_dashCpu) return;
+    const gopt::HardwareProfile p = g_core->Profile();
+    SetWindowTextW(g_dashCpu, Utf8ToWide("CPU: " + p.cpuModel + "（" + std::to_string(p.physicalCores)
+        + " " + T("物理核", "cores") + " / " + std::to_string(p.logicalCores) + " "
+        + T("逻辑", "threads") + " @ " + std::to_string(p.cpuBaseFreqMHz) + " MHz）").c_str());
+    SetWindowTextW(g_dashGpu, Utf8ToWide("GPU: " + p.gpuVendor + " " + p.gpuModel + "（"
+        + std::to_string(p.vramMB / 1024) + " GB，Driver " + p.gpuDriverVersion + "）").c_str());
+    SetWindowTextW(g_dashRam, Utf8ToWide("RAM: " + std::to_string(p.systemRamMB / 1024)
+        + " GB（" + T("可用", "free") + " " + std::to_string(p.availableRamMB / 1024) + " GB）").c_str());
+    UpdateFooter();
 }
 
 static void ShowPage(int page) {
@@ -281,13 +299,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g_pages[i] = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS,
                                              222, 62, 770, 320, hwnd, nullptr, hInst, nullptr);
 
-            // 【页0 总览】
+            // 【页0 总览】使用引导 + 硬件信息卡 + 一键大按钮
             HWND p = g_pages[0];
-            makeCtl(p, L"STATIC", L"", 0, 18, 14, 460, 26, 0);
-            g_bigOpt = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 18, 96, 220, 54, IDC_BIGOPT);
+            g_dashHelp = makeCtl(p, L"STATIC", L"", 0, 18, 12, 720, 24, 0);
+            g_dashCpu = makeCtl(p, L"STATIC", L"", 0, 18, 46, 720, 26, 0);
+            g_dashGpu = makeCtl(p, L"STATIC", L"", 0, 18, 80, 720, 26, 0);
+            g_dashRam = makeCtl(p, L"STATIC", L"", 0, 18, 114, 720, 26, 0);
+            g_bigOpt = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 18, 158, 220, 54, IDC_BIGOPT);
             SendMessageW(g_bigOpt, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBig), TRUE);
-            makeCtl(p, L"STATIC", L"", 0, 18, 168, 460, 24, 0);
-            makeCtl(p, L"STATIC", L"", 0, 18, 200, 460, 26, 0);
+            g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 22, 0);
             // 【页1 游戏优化】
             p = g_pages[1];
             g_combo = makeCtl(p, L"COMBOBOX", L"", CBS_DROPDOWNLIST, 18, 16, 200, 200, IDC_COMBO);
@@ -299,22 +319,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_btnRollback = makeCtl(p, L"BUTTON", L"", 0, 128, 170, 100, 30, IDC_ROLLBACK);
             g_btnSave = makeCtl(p, L"BUTTON", L"", 0, 238, 170, 100, 30, IDC_SAVE);
             SendMessageW(g_btnApply, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
+            g_hint1 = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 60, 0);
             // 【页2 系统调优】
             p = g_pages[2];
             g_btnTuneHigh = makeCtl(p, L"BUTTON", L"", 0, 18, 30, 200, 40, IDC_TUNE_HIGH);
             g_btnTuneBal = makeCtl(p, L"BUTTON", L"", 0, 18, 84, 200, 40, IDC_TUNE_BAL);
             g_btnTuneRestore = makeCtl(p, L"BUTTON", L"", 0, 18, 138, 200, 40, IDC_TUNE_RESTORE);
             SendMessageW(g_btnTuneHigh, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
+            g_hint2 = makeCtl(p, L"STATIC", L"", 0, 18, 196, 720, 60, 0);
             // 【页3 进程】
             p = g_pages[3];
-            g_listProc = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 460, 260, IDC_PROCLIST);
+            g_listProc = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 460, 200, IDC_PROCLIST);
             g_btnProcRefresh = makeCtl(p, L"BUTTON", L"", 0, 490, 16, 90, 26, IDC_PROC_REFRESH);
+            g_hint3 = makeCtl(p, L"STATIC", L"", 0, 18, 232, 720, 44, 0);
             // 【页4 启动项】
             p = g_pages[4];
-            g_listStartup = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 360, 260, IDC_STARTUP_LIST);
+            g_listStartup = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 360, 200, IDC_STARTUP_LIST);
             g_btnStartupRefresh = makeCtl(p, L"BUTTON", L"", 0, 390, 16, 90, 26, IDC_STARTUP_REFRESH);
             g_btnStartupDisable = makeCtl(p, L"BUTTON", L"", 0, 390, 50, 90, 26, IDC_STARTUP_DISABLE);
             g_btnStartupEnable = makeCtl(p, L"BUTTON", L"", 0, 390, 84, 90, 26, IDC_STARTUP_ENABLE);
+            g_btnStartupRestore = makeCtl(p, L"BUTTON", L"", 0, 390, 118, 110, 26, IDC_STARTUP_RESTORE);
+            g_hint4 = makeCtl(p, L"STATIC", L"", 0, 18, 232, 720, 44, 0);
 
             // ----- 底部日志 + 状态栏 -----
             g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
@@ -329,7 +354,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const char* navZh[5] = {"总览", "游戏优化", "系统调优", "进程", "启动项"};
             const char* navEn[5] = {"Dashboard", "Game Tune", "System Tune", "Processes", "Startup"};
             for (int i = 0; i < 5; ++i) Label(g_nav[i], navZh[i], navEn[i]);
-            Label(g_bigOpt, "⚡ 一键性能优化", "⚡ One-click Boost");
+            Label(g_bigOpt, "一键性能优化", "One-click Boost");
             Label(g_btnBrowse, "浏览...", "Browse...");
             Label(g_btnApply, "应用优化", "Apply");
             Label(g_btnRollback, "回滚", "Rollback");
@@ -342,13 +367,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             Label(g_btnStartupRefresh, "刷新", "Refresh");
             Label(g_btnStartupDisable, "禁用选中", "Disable");
             Label(g_btnStartupEnable, "启用选中", "Enable");
+            Label(g_btnStartupRestore, "恢复全部", "Restore All");
+            Label(g_hint1,
+                  "玩法：路径留空 → 优化正在运行的游戏；填写该游戏 exe 路径并「保存游戏设置」→「应用优化」会先代启动并自动优化。",
+                  "Tip: leave path empty to optimize a running game; set the exe path + Save, then Apply will launch and optimize it.");
+            Label(g_hint2,
+                  "调优 = 切换高性能/平衡电源 + 处理器最大/最小频率 + 系统调度优先级（需管理员权限）。应用前自动快照，「恢复调优」可还原。",
+                  "Tune = power scheme + processor min/max + priority separation (admin). Auto snapshot; Restore Tune reverts it.");
+            Label(g_hint3,
+                  "列表仅显示 8 款支持游戏中正在运行的；「一键优化」会自动并发优化其中全部游戏。",
+                  "Lists the supported games currently running; One-click Boost optimizes all of them.");
+            Label(g_hint4,
+                  "选中后可禁用/启用（禁用=改名保留并记录备份）；「恢复全部」还原所有被本工具禁用的项。",
+                  "Select an entry to disable/enable (rename-based, backed up); Restore All reverts them.");
 
             // 初始化
+            SetWindowTextW(g_dashHelp,
+                Utf8ToWide(T("怎么用：① 启动游戏（或到「游戏优化」页配置路径后由工具代启动）→ ② 点上面一键 → ③ 随时「回滚」。",
+                             "How to use: 1) start a game (or set its exe path in Game Tune)  2) click Boost  3) Rollback anytime.")).c_str());
+            SetWindowTextW(g_dashNote,
+                Utf8ToWide(T("所有功能免费 · 无注入、无内核 Hook · 每次优化自动快照可回滚",
+                             "All free · no injection, no kernel hooks · auto snapshot each optimize")).c_str());
             RefreshGameList();
             RefreshProcList();
             RefreshStartupList();
             ShowPage(0);
-            UpdateFooter();
+            UpdateDashboard();
             AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + "  所有功能免费\n");
             AddLog(T("左侧导航切换功能；一键优化 = 并发处理所有运行中的支持游戏。\n\n",
                      "Use the nav; one-click = concurrent batch optimize of running games.\n\n"));
@@ -403,12 +447,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             HBRUSH hlB = CreateSolidBrush(RGB(37, 99, 235));
             FillRect(dc, &hl, hlB);
             DeleteObject(hlB);
-            // 进度条
-            RECT track{228, 58 + 332, rc.right - 16, 58 + 338};
-            HBRUSH bgT = CreateSolidBrush(RGB(226, 232, 240));
-            FillRect(dc, &track, bgT);
-            DeleteObject(bgT);
+            // 进度条（仅在执行流程时显示）
             if (g_progress > 0.0) {
+                RECT track{228, 58 + 332, rc.right - 16, 58 + 338};
+                HBRUSH bgT = CreateSolidBrush(RGB(226, 232, 240));
+                FillRect(dc, &track, bgT);
+                DeleteObject(bgT);
                 const int w = static_cast<int>((track.right - track.left) * g_progress);
                 RECT fill = track;
                 fill.right = track.left + w;
@@ -501,15 +545,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (id == IDC_PROC_REFRESH) { RefreshProcList(); return 0; }
             if (id == IDC_STARTUP_REFRESH) { RefreshStartupList(); return 0; }
+            if (id == IDC_STARTUP_RESTORE) {
+                const int n = StartupManager::RestoreAll();
+                AddLog(std::string(T("已恢复 ", "Restored ")) + std::to_string(n) + " " + T("个启动项。\n\n", "startup entries.\n\n"));
+                RefreshStartupList();
+                return 0;
+            }
             if (id == IDC_STARTUP_DISABLE || id == IDC_STARTUP_ENABLE) {
                 const int sel = static_cast<int>(SendMessageW(g_listStartup, LB_GETCURSEL, 0, 0));
-                if (sel >= 0 && sel < static_cast<int>(g_startups.size())) {
-                    const bool ok = (id == IDC_STARTUP_DISABLE)
-                                        ? StartupManager::Disable(g_startups[sel].name)
-                                        : StartupManager::Enable(g_startups[sel].name);
-                    AddLog(std::string(ok ? "OK: " : "FAIL: ") + g_startups[sel].name + "\n\n");
-                    RefreshStartupList();
+                if (sel < 0 || sel >= static_cast<int>(g_startups.size()) || g_startups.empty()) {
+                    AddLog(std::string(T("请先在列表中选择要操作的启动项。\n\n",
+                                         "Please select a startup entry first.\n\n")));
+                    return 0;
                 }
+                const bool ok = (id == IDC_STARTUP_DISABLE)
+                                    ? StartupManager::Disable(g_startups[sel].name)
+                                    : StartupManager::Enable(g_startups[sel].name);
+                AddLog(std::string(ok ? "OK: " : "FAIL: ") + g_startups[sel].name + "\n\n");
+                RefreshStartupList();
                 return 0;
             }
         } break;
@@ -521,8 +574,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_APP_FINISH: {
             AddLog("\n\n");
+            g_progress = 0.0;
             RefreshProcList();
-            UpdateFooter();
+            UpdateDashboard();
+            InvalidateRect(g_hwnd, nullptr, FALSE);
             return 0;
         }
         case WM_SIZE: {
