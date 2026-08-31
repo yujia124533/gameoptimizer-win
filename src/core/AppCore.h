@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include "hardware/HardwareProfile.h"
@@ -21,11 +22,14 @@ class AppCore {
 public:
     explicit AppCore(const AppConfig& cfg = AppConfig());
 
+    // 流程回调：每完成一步回调一行（GUI 逐条动画用）；stepDelayMs 为步间延迟（毫秒）
+    using FlowCallback = std::function<void(const std::string& line)>;
+
     // 全流程优化；返回人类可读结果（含失败 / 降级说明）
-    std::string OptimizeForGame(GameId id);
+    std::string OptimizeForGame(GameId id, const FlowCallback& cb = {}, int stepDelayMs = 0);
 
     // 一键优化：自动检测第一个运行中的支持游戏并应用其预设；无游戏时做系统级性能优化
-    std::string OptimizeAuto();
+    std::string OptimizeAuto(const FlowCallback& cb = {}, int stepDelayMs = 0);
 
     // 系统级一键性能优化（无需游戏运行）：高性能电源方案等
     std::string OptimizeSystem();

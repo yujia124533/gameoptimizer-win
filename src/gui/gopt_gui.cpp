@@ -231,13 +231,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             } else if (id == IDC_APPLY) {
                 AppCore* core = MakeCore();
                 AddLog(std::string(T("== 应用优化 ", "== Apply ")) + gopt::GameIdToString(CurrentGame()) + " ==\n");
-                AddLog(core->OptimizeForGame(CurrentGame()));
+                core->OptimizeForGame(CurrentGame(),
+                                      [](const std::string& l) { AddLog(l); }, 450);
                 AddLog("\n\n");
                 delete core;
             } else if (id == IDC_AUTO) {
                 AppCore* core = MakeCore();
                 AddLog(std::string(T("== 一键优化 ==\n", "== One-click optimize ==\n")));
-                AddLog(core->OptimizeAuto());
+                core->OptimizeAuto([](const std::string& l) { AddLog(l); }, 450);
                 AddLog("\n\n");
                 delete core;
             } else if (id == IDC_ROLLBACK) {

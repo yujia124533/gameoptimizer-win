@@ -97,7 +97,7 @@ LicenseInfo AppCore::License() const {
     return license_;
 }
 
-std::string AppCore::OptimizeForGame(GameId id) {
+std::string AppCore::OptimizeForGame(GameId id, const FlowCallback& cb, int stepDelayMs) {
     lastGame_ = id;
     const std::string gameName = GameIdToString(id);
     GamePreset preset = ResolvedPreset(id);
@@ -113,10 +113,18 @@ std::string AppCore::OptimizeForGame(GameId id) {
     if (!gc.powerScheme) preset.switchHighPerformancePower = false;
 
     std::ostringstream os;
-    os << "== 优化 " << gameName << " ==\n";
-    os << "所有功能免费：全部优化项对所有人开放。\n";
-    os << "预设方案: " << preset.description << "\n\n";
-    os << "-- 优化流程 --\n";
+    // 逐行输出：累积到字符串；有回调时同时回调（供 GUI 逐条动画）
+    auto emit = [&](const std::string& line) {
+        os << line;
+        if (cb) {
+            cb(line);
+            if (stepDelayMs > 0) Sleep(static_cast<DWORD>(stepDelayMs));
+        }
+    };
+    emit("== 优化 " + gameName + " ==\n");
+    emit("所有功能免费：全部优化项对所有人开放。\n");
+    emit("预设方案: " + preset.description + "\n");
+    emit("\n-- 优化流程 --\n");
 
     // [1] 目标进程：找到运行中的游戏，或按配置代启动（路径：CLI/GUI 显式 > 每游戏配置）
     const std::wstring launchExe = !config_.gameExeOverride.empty()
@@ -141,34 +149,33 @@ std::string AppCore::OptimizeForGame(GameId id) {
         }
     }
     if (pid == 0) {
-        os << "  未找到运行中的 " << WideToUtf8(GameExeName(id).c_str())
-           << "，且未配置可执行文件路径。\n"
-           << "  请先启动游戏，或用 game <name> --exe <路径> 配置后重试。\n";
+        emit("  未找到运行中的 " + WideToUtf8(GameExeName(id).c_str())
+             + "，且未配置可执行文件路径。\n");
+        emit("  请先启动游戏，或用 game <name> --exe <路径> 配置后重试。\n");
         return os.str();
     }
-    os << "  1) 目标进程: " << WideToUtf8(GameExeName(id).c_str());
-    if (launched) os << "（代启动 pid=" << pid << "）";
-    os << "\n";
+    emit("  1) 目标进程: " + WideToUtf8(GameExeName(id).c_str())
+         + (launched ? ("（代启动 pid=" + std::to_string(pid) + "）") : "") + "\n");
 
     // [2] 快照（应用任何修改之前，持久化到磁盘）
     rollback_.CreateSavePoint(pid, gameName);
-    os << "  2) 快照: 已保存（可随时回滚到应用前状态）\n";
+    emit("  2) 快照: 已保存（可随时回滚到应用前状态）\n");
 
     // [3..] 逐项应用（电源由 ApplyPreset 处理；未启用 --power/开关时不尝试）
     if (!config_.allowPowerSchemeSwitch) preset.switchHighPerformancePower = false;
     const SecurityRollback::ApplyReport rep = SecurityRollback::ApplyPreset(pid, preset);
     int step = 3;
     for (const auto& item : rep.items) {
-        os << "  " << step++ << ") " << item.first << ": "
-           << (item.second ? "成功" : "失败") << "\n";
+        emit("  " + std::to_string(step++) + ") " + item.first + ": "
+             + (item.second ? "成功" : "失败") + "\n");
     }
-    for (const auto& f : rep.failures) os << "       ↳ " << f << "\n";
+    for (const auto& f : rep.failures) emit("       ↳ " + f + "\n");
 
     // [最后] 看门狗
     SecurityRollback::WatchdogConfig wc;
     rollback_.StartWatchdog(wc);
-    os << "  " << step++ << ") 看门狗: 已启动（10 秒宽限期；异常将"
-       << (config_.autoRollbackOnUnstable ? "自动回滚" : "提示人工回滚") << "）\n";
+    emit("  " + std::to_string(step++) + ") 看门狗: 已启动（10 秒宽限期；异常将"
+         + (config_.autoRollbackOnUnstable ? "自动回滚" : "提示人工回滚") + "）\n");
     return os.str();
 }
 
@@ -178,15 +185,33 @@ std::string AppCore::Rollback() {
     return ok ? "已回滚最近一次优化。" : "回滚失败或部分失败: " + rollback_.LastErrorText();
 }
 
-std::string AppCore::OptimizeAuto() {
+std::string AppCore::OptimizeAuto(const FlowCallback& cb, int stepDelayMs) {
     // 一键：检测第一个运行中的支持游戏并应用其预设
     for (const GameId id : kAllGames) {
         if (FindProcessByExeName(GameExeName(id)) != 0) {
-            return OptimizeForGame(id);
+            return OptimizeForGame(id, cb, stepDelayMs);
         }
     }
     // 无游戏运行 → 系统级一键性能优化（无需先启动游戏）
-    return OptimizeSystem();
+    std::ostringstream os;
+    auto emit = [&](const std::string& l) {
+        os << l;
+        if (cb) { cb(l); if (stepDelayMs > 0) Sleep(static_cast<DWORD>(stepDelayMs)); }
+    };
+    emit("== 系统一键性能优化 ==\n");
+    emit("所有功能免费：全部优化项对所有人开放。\n");
+    emit("\n-- 优化流程 --\n");
+    emit("  1) 电源方案: 尝试切换高性能（需 --power/开关 + 管理员）\n");
+    if (!config_.allowPowerSchemeSwitch) {
+        emit("  2) 提示: 未启用电源切换（可勾选/加 --power）\n");
+        return os.str();
+    }
+    if (HAL::ActivateHighPerformanceScheme()) {
+        emit("  2) 结果: 已切换高性能 ✓\n");
+    } else {
+        emit("  2) 结果: 切换失败（" + HAL::LastErrorText() + "，可能需管理员）\n");
+    }
+    return os.str();
 }
 
 std::string AppCore::OptimizeSystem() {
