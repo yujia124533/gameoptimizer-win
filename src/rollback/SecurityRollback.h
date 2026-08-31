@@ -37,12 +37,17 @@ public:
     bool CreateSavePoint(uint32_t processId, const std::string& gameName);
 
     // 应用预设：先 CreateSavePoint，再逐个执行（失败项降级记录，不中止后续）
+    struct StepItem {
+        std::string label;   // 步骤名（如"进程优先级"）
+        bool ok = false;     // 是否成功
+        int elapsedMs = 0;   // 该步实际耗时
+    };
     struct ApplyReport {
         bool ok = false;                    // 是否有任何项成功
         int appliedCount = 0;
         int failedCount = 0;
-        std::vector<std::string> failures;        // 失败原因（含降级说明）
-        std::vector<std::pair<std::string, bool>> items;  // 每步结果（名称, 是否成功），供流程显示
+        std::vector<std::string> failures;  // 失败原因（含降级说明）
+        std::vector<StepItem> items;        // 每步结果，供流程显示
     };
     static ApplyReport ApplyPreset(uint32_t processId, const GamePreset& preset);
 

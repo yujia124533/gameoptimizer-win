@@ -65,6 +65,40 @@ static void AddLog(const std::string& s) {
     SendMessageW(g_log, EM_SCROLLCARET, 0, 0);
 }
 
+static HWND g_hwnd = nullptr;
+static double g_progress = 0.0;   // 进度条 0..1
+static int g_pendingStart = 0;    // "处理中..."行的起始字符位置
+static int g_pendingLen = 0;      // 该行长度（供替换）
+
+// 流程事件渲染：Info 输出；StepStart 显示"处理中..."；StepOk/Fail 替换为该行 ✓/✗ + 真实耗时；更新进度条
+static void RenderFlowEvent(const gopt::AppCore::FlowEvent& e) {
+    switch (e.kind) {
+        case gopt::AppCore::FlowEvent::Info:
+            AddLog(e.text + "\n");
+            break;
+        case gopt::AppCore::FlowEvent::StepStart: {
+            const int start = GetWindowTextLengthW(g_log);
+            g_pendingStart = start;
+            AddLog("  " + std::to_string(e.step) + ") " + e.text + ": "
+                   + T("处理中...", "running...") + "\n");
+            g_pendingLen = GetWindowTextLengthW(g_log) - start;
+            break;
+        }
+        case gopt::AppCore::FlowEvent::StepOk:
+        case gopt::AppCore::FlowEvent::StepFail: {
+            const std::string line = "  " + std::to_string(e.step) + ") " + e.text + ": "
+                + (e.kind == gopt::AppCore::FlowEvent::StepOk ? T("成功 ✓", "OK ✓") : T("失败 ✗", "FAIL ✗"))
+                + "（" + std::to_string(e.elapsedMs) + T(" ms）", " ms）") + "\n";
+            SendMessageW(g_log, EM_SETSEL, g_pendingStart, g_pendingStart + g_pendingLen);
+            SendMessageW(g_log, EM_REPLACESEL, FALSE,
+                         reinterpret_cast<LPARAM>(Utf8ToWide(line).c_str()));
+            break;
+        }
+    }
+    if (e.total > 0) g_progress = static_cast<double>(e.step) / static_cast<double>(e.total);
+    if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
 // 当前所选游戏
 static GameId CurrentGame() {
     const int idx = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
@@ -144,6 +178,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             const HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetModuleHandleW(nullptr));
+            g_hwnd = hwnd;
             // 字体：微软雅黑 UI（Win10+），并让标准控件走现代主题（manifest 已启用 v6 控件）
             if (!g_font) {
                 g_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -157,19 +192,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (c && g_font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
                 return c;
             };
-            g_combo = makeCtl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 16, 64, 170, 220, 0);
-            g_lang = makeCtl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 192, 64, 72, 120, IDC_LANG);
-            g_btnApply = makeCtl(L"BUTTON", L"", 0, 274, 64, 110, 28, IDC_APPLY);
-            g_path = makeCtl(L"EDIT", L"", WS_TABSTOP, 16, 98, 150, 26, 0, WS_EX_CLIENTEDGE);
-            g_btnBrowse = makeCtl(L"BUTTON", L"", 0, 172, 98, 50, 26, IDC_BROWSE);
-            g_btnRollback = makeCtl(L"BUTTON", L"", 0, 274, 98, 110, 28, IDC_ROLLBACK);
-            g_args = makeCtl(L"EDIT", L"", WS_TABSTOP, 16, 130, 200, 26, 0, WS_EX_CLIENTEDGE);
-            g_btnSave = makeCtl(L"BUTTON", L"", 0, 274, 130, 110, 28, IDC_SAVE);
-            g_power = makeCtl(L"BUTTON", L"", BS_AUTOCHECKBOX, 16, 162, 250, 24, IDC_POWER);
-            g_btnRefresh = makeCtl(L"BUTTON", L"", 0, 274, 162, 110, 28, IDC_REFRESH);
-            g_btnAuto = makeCtl(L"BUTTON", L"", 0, 16, 192, 150, 30, IDC_AUTO);
+            g_combo = makeCtl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 16, 74, 170, 220, 0);
+            g_lang = makeCtl(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST, 192, 74, 72, 120, IDC_LANG);
+            g_btnApply = makeCtl(L"BUTTON", L"", 0, 274, 74, 110, 28, IDC_APPLY);
+            g_path = makeCtl(L"EDIT", L"", WS_TABSTOP, 16, 108, 150, 26, 0, WS_EX_CLIENTEDGE);
+            g_btnBrowse = makeCtl(L"BUTTON", L"", 0, 172, 108, 50, 26, IDC_BROWSE);
+            g_btnRollback = makeCtl(L"BUTTON", L"", 0, 274, 108, 110, 28, IDC_ROLLBACK);
+            g_args = makeCtl(L"EDIT", L"", WS_TABSTOP, 16, 140, 200, 26, 0, WS_EX_CLIENTEDGE);
+            g_btnSave = makeCtl(L"BUTTON", L"", 0, 274, 140, 110, 28, IDC_SAVE);
+            g_power = makeCtl(L"BUTTON", L"", BS_AUTOCHECKBOX, 16, 172, 250, 24, IDC_POWER);
+            g_btnRefresh = makeCtl(L"BUTTON", L"", 0, 274, 172, 110, 28, IDC_REFRESH);
+            g_btnAuto = makeCtl(L"BUTTON", L"", 0, 16, 202, 150, 30, IDC_AUTO);
             g_log = makeCtl(L"EDIT", L"", ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
-                            16, 232, 368, 190, 0, WS_EX_CLIENTEDGE);
+                            16, 242, 368, 180, 0, WS_EX_CLIENTEDGE);
             // 让按钮/勾选使用系统主题外观
             SendMessageW(g_power, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
 
@@ -197,6 +232,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RECT tr{14, 6, rc.right - 14, 46};
             DrawTextW(dc, L"GameOptimizer", -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             SelectObject(dc, old);
+            // 进度条（优化流程执行时更新，蓝色填充）
+            RECT track{16, 62, rc.right - 16, 68};
+            HBRUSH bgT = CreateSolidBrush(RGB(226, 232, 240));
+            FillRect(dc, &track, bgT);
+            DeleteObject(bgT);
+            if (g_progress > 0.0) {
+                const int w = static_cast<int>((track.right - track.left) * g_progress);
+                RECT fill = track;
+                fill.right = track.left + w;
+                HBRUSH fg = CreateSolidBrush(RGB(37, 99, 235));
+                FillRect(dc, &fill, fg);
+                DeleteObject(fg);
+            }
             EndPaint(hwnd, &ps);
         } break;
 
@@ -232,13 +280,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 AppCore* core = MakeCore();
                 AddLog(std::string(T("== 应用优化 ", "== Apply ")) + gopt::GameIdToString(CurrentGame()) + " ==\n");
                 core->OptimizeForGame(CurrentGame(),
-                                      [](const std::string& l) { AddLog(l); }, 450);
+                                      [](const gopt::AppCore::FlowEvent& e) { RenderFlowEvent(e); }, 350);
                 AddLog("\n\n");
                 delete core;
             } else if (id == IDC_AUTO) {
                 AppCore* core = MakeCore();
                 AddLog(std::string(T("== 一键优化 ==\n", "== One-click optimize ==\n")));
-                core->OptimizeAuto([](const std::string& l) { AddLog(l); }, 450);
+                core->OptimizeAuto([](const gopt::AppCore::FlowEvent& e) { RenderFlowEvent(e); }, 350);
                 AddLog("\n\n");
                 delete core;
             } else if (id == IDC_ROLLBACK) {
@@ -257,7 +305,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SIZE: {
             RECT rc{};
             GetClientRect(hwnd, &rc);
-            MoveWindow(g_log, 16, 232, rc.right - 32, rc.bottom - 248, TRUE);
+            MoveWindow(g_log, 16, 242, rc.right - 32, rc.bottom - 258, TRUE);
         } break;
 
         case WM_DESTROY:
@@ -288,7 +336,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
 
     HWND hwnd = CreateWindowExW(0, cls, L"GameOptimizer" L" v" GOPT_VERSION_STR,
                                 WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                                400, 440, nullptr, nullptr, hInst, nullptr);
+                                400, 450, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 0;
     ShowWindow(hwnd, nShow);
     UpdateWindow(hwnd);

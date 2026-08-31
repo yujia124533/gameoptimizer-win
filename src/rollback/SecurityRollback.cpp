@@ -225,44 +225,33 @@ SecurityRollback::ApplyReport SecurityRollback::ApplyPreset(uint32_t processId,
     }
 
     if (preset.processPriorityClass != 0) {
-        if (HAL::SetProcessPriority(h, preset.processPriorityClass)) {
-            ++rep.appliedCount;
-            rep.items.emplace_back("进程优先级", true);
-        } else {
-            ++rep.failedCount;
-            rep.items.emplace_back("进程优先级", false);
-            rep.failures.push_back(HAL::LastErrorText());
-        }
+        const ULONGLONG t0 = GetTickCount64();
+        const bool ok = HAL::SetProcessPriority(h, preset.processPriorityClass);
+        rep.items.push_back({"进程优先级", ok, static_cast<int>(GetTickCount64() - t0)});
+        if (ok) ++rep.appliedCount;
+        else { ++rep.failedCount; rep.failures.push_back(HAL::LastErrorText()); }
     }
     if (preset.cpuAffinityMask != 0) {
-        if (HAL::SetProcessAffinity(h, preset.cpuAffinityGroup, preset.cpuAffinityMask)) {
-            ++rep.appliedCount;
-            rep.items.emplace_back("CPU 亲和性", true);
-        } else {
-            ++rep.failedCount;
-            rep.items.emplace_back("CPU 亲和性", false);
-            rep.failures.push_back(HAL::LastErrorText());
-        }
+        const ULONGLONG t0 = GetTickCount64();
+        const bool ok = HAL::SetProcessAffinity(h, preset.cpuAffinityGroup, preset.cpuAffinityMask);
+        rep.items.push_back({"CPU 亲和性", ok, static_cast<int>(GetTickCount64() - t0)});
+        if (ok) ++rep.appliedCount;
+        else { ++rep.failedCount; rep.failures.push_back(HAL::LastErrorText()); }
     }
     if (preset.workingSetMinMB != 0 || preset.workingSetMaxMB != 0) {
-        if (HAL::SetProcessWorkingSetMB(h, preset.workingSetMinMB, preset.workingSetMaxMB)) {
-            ++rep.appliedCount;
-            rep.items.emplace_back("工作集", true);
-        } else {
-            ++rep.failedCount;
-            rep.items.emplace_back("工作集", false);
-            rep.failures.push_back(HAL::LastErrorText());
-        }
+        const ULONGLONG t0 = GetTickCount64();
+        const bool ok = HAL::SetProcessWorkingSetMB(h, preset.workingSetMinMB, preset.workingSetMaxMB);
+        rep.items.push_back({"工作集", ok, static_cast<int>(GetTickCount64() - t0)});
+        if (ok) ++rep.appliedCount;
+        else { ++rep.failedCount; rep.failures.push_back(HAL::LastErrorText()); }
     }
     if (preset.switchHighPerformancePower) {
         // 电源切换需要管理员权限；失败降级跳过（不中止其余优化）
-        if (HAL::ActivateHighPerformanceScheme()) {
-            ++rep.appliedCount;
-            rep.items.emplace_back("电源方案（高性能）", true);
-        } else {
-            rep.items.emplace_back("电源方案（高性能）", false);
-            rep.failures.push_back("电源方案切换跳过: " + HAL::LastErrorText());
-        }
+        const ULONGLONG t0 = GetTickCount64();
+        const bool ok = HAL::ActivateHighPerformanceScheme();
+        rep.items.push_back({"电源方案（高性能）", ok, static_cast<int>(GetTickCount64() - t0)});
+        if (ok) ++rep.appliedCount;
+        else rep.failures.push_back("电源方案切换跳过: " + HAL::LastErrorText());
     }
     CloseHandle(h);
     rep.ok = rep.appliedCount > 0;

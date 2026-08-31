@@ -22,8 +22,16 @@ class AppCore {
 public:
     explicit AppCore(const AppConfig& cfg = AppConfig());
 
-    // 流程回调：每完成一步回调一行（GUI 逐条动画用）；stepDelayMs 为步间延迟（毫秒）
-    using FlowCallback = std::function<void(const std::string& line)>;
+    // 流程事件：每一步「开始 / 完成」含真实耗时，供 GUI 逐条动画与进度条
+    struct FlowEvent {
+        enum Kind { Info, StepStart, StepOk, StepFail };
+        Kind kind = Info;
+        std::string text;    // 步骤名 / 信息文本
+        int step = 0;        // 当前步骤号（1 起）
+        int total = 0;       // 总步骤数（进度条）
+        int elapsedMs = 0;   // StepOk/Fail 该步真实耗时
+    };
+    using FlowCallback = std::function<void(const FlowEvent&)>;
 
     // 全流程优化；返回人类可读结果（含失败 / 降级说明）
     std::string OptimizeForGame(GameId id, const FlowCallback& cb = {}, int stepDelayMs = 0);
