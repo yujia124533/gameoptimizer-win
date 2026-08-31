@@ -285,6 +285,34 @@ std::string AppCore::OptimizeSystem() {
     return os.str();
 }
 
+std::vector<std::pair<GameId, uint32_t>> AppCore::RunningGames() const {
+    std::vector<std::pair<GameId, uint32_t>> out;
+    for (const GameId id : kAllGames) {
+        const uint32_t pid = FindProcessByExeName(GameExeName(id));
+        if (pid != 0) out.emplace_back(id, pid);
+    }
+    return out;
+}
+
+std::string AppCore::OptimizeAll(const FlowCallback& cb, int stepDelayMs) {
+    const auto running = RunningGames();
+    if (running.empty()) {
+        if (cb) cb({FlowEvent::Info, "（未检测到运行中的支持游戏，执行系统级一键优化）", 0, 0, 0});
+        return OptimizeAuto(cb, stepDelayMs);
+    }
+    if (cb) {
+        cb({FlowEvent::Info, "（并发处理：检测到 " + std::to_string(running.size())
+                             + " 个运行中的支持游戏，逐一优化）", 0, 0, 0});
+    }
+    std::string all;
+    for (const auto& [id, pid] : running) {
+        (void)pid;
+        all += OptimizeForGame(id, cb, stepDelayMs);
+        all += "\n";
+    }
+    return all;
+}
+
 std::string AppCore::TuneSystem(bool highPerf) {
     return SystemTuner::Tune(cachedProfile_, highPerf);
 }

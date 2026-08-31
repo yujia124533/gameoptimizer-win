@@ -10,6 +10,7 @@
 #include "hal/HAL.h"
 #include "i18n.h"
 #include "license/License.h"
+#include "tuning/StartupManager.h"
 #include "tuning/SystemTuner.h"
 #include "version.h"
 
@@ -262,8 +263,8 @@ int main(int argc, char** argv) {
     if (cmd == "optimize") {
         AppCore core(cfg);
         if (gameArg.empty()) {
-            // 一键：有运行中的游戏→优化游戏；否则系统级性能优化（无需游戏）
-            std::puts(core.OptimizeAuto().c_str());
+            // 一键+并发：批量处理所有运行中的支持游戏（无游戏则系统级）
+            std::puts(core.OptimizeAll().c_str());
         } else if (gameArg == "system" || gameArg == "sys") {
             std::puts(core.OptimizeSystem().c_str());
         } else {
@@ -317,6 +318,64 @@ int main(int argc, char** argv) {
             std::printf("%s\n", high ? T("（依据硬件推荐：高性能档）", "(hardware suggests: high-performance)")
                                      : T("（依据硬件推荐：平衡档）", "(hardware suggests: balanced)"));
         std::puts(core.TuneSystem(high).c_str());
+        return 0;
+    }
+
+    if (cmd == "list") {
+        // Process Lasso 风格：运行中的支持游戏概览（优先级/亲和性）
+        AppCore core(cfg);
+        const auto running = core.RunningGames();
+        if (running.empty()) {
+            std::puts(T("没有运行中的支持游戏。", "No supported games running."));
+            return 0;
+        }
+        for (const auto& [id, pid] : running) {
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            DWORD pri = 0;
+            DWORD_PTR mask = 0, sys = 0;
+            if (h != nullptr) {
+                pri = GetPriorityClass(h);
+                GetProcessAffinityMask(h, &mask, &sys);
+                CloseHandle(h);
+            }
+            std::printf("  %-10s pid=%-7u 优先级=0x%lx 亲和性=0x%llx\n",
+                        gopt::GameIdToString(id).c_str(), pid,
+                        static_cast<unsigned long>(pri),
+                        static_cast<unsigned long long>(mask));
+        }
+        return 0;
+    }
+
+    if (cmd == "startup") {
+        // Wise Care 365 风格：开机启动项管理（禁用=改名保留，可恢复）
+        const std::string sub = gameArg;
+        if (sub == "list") {
+            const auto items = gopt::StartupManager::List();
+            if (items.empty()) {
+                std::puts(T("（没有启动项）", "(no startup entries)"));
+                return 0;
+            }
+            std::printf("%s:\n", T("已启用启动项", "Enabled startup entries"));
+            for (const auto& e : items) {
+                std::printf("  [%s] %s = %s\n", e.hive.c_str(), e.name.c_str(), e.value.c_str());
+            }
+            return 0;
+        }
+        if (sub == "restore") {
+            std::printf(T("已恢复 %d 个由本工具禁用的启动项。\n", "Restored %d entries.\n"),
+                        gopt::StartupManager::RestoreAll());
+            return 0;
+        }
+        if ((sub == "disable" || sub == "enable") && argc >= 4) {
+            const bool ok = (sub == "disable") ? gopt::StartupManager::Disable(argv[3])
+                                               : gopt::StartupManager::Enable(argv[3]);
+            std::printf("%s %s: %s\n", (sub == "disable" ? T("禁用", "Disable") : T("启用", "Enable")),
+                        argv[3], ok ? T("成功", "OK")
+                                    : T("未找到/失败（可能已在另一 hive 或不存在）", "not found / failed"));
+            return 0;
+        }
+        std::puts(T("用法: gopt_cli startup list | disable <名称> | enable <名称> | restore",
+                    "Usage: gopt_cli startup list | disable <name> | enable <name> | restore"));
         return 0;
     }
 

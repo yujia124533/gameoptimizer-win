@@ -22,6 +22,7 @@ add_library(gameopt_core STATIC
     src/rollback/SecurityRollback.cpp
     src/config/GameConfig.cpp
     src/tuning/SystemTuner.cpp
+    src/tuning/StartupManager.cpp
     src/license/License.cpp
     src/core/AppCore.cpp
 )

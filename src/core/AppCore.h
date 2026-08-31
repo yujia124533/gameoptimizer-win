@@ -2,6 +2,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "hardware/HardwareProfile.h"
 #include "license/License.h"
@@ -38,6 +40,12 @@ public:
 
     // 一键优化：自动检测第一个运行中的支持游戏并应用其预设；无游戏时做系统级性能优化
     std::string OptimizeAuto(const FlowCallback& cb = {}, int stepDelayMs = 0);
+
+    // 并发处理：对所有运行中的支持游戏批量优化（GUI 在后台线程调用，UI 不阻塞）
+    std::string OptimizeAll(const FlowCallback& cb = {}, int stepDelayMs = 0);
+
+    // 运行中的支持游戏概览（Process Lasso 风格）：游戏 → pid
+    std::vector<std::pair<GameId, uint32_t>> RunningGames() const;
 
     // 系统级一键性能优化（无需游戏运行）：高性能电源方案等
     std::string OptimizeSystem();
