@@ -32,6 +32,9 @@ static void PrintUsage() {
         "  gopt_cli apply <game> [选项]         应用优化（自动快照 + 看门狗监控）\n"
         "  gopt_cli rollback                    回滚最近一次优化\n"
         "  gopt_cli rollback-all                回滚全部\n"
+        "  gopt_cli list                          显示运行中的支持游戏（优先级/亲和性）\n"
+        "  gopt_cli prio <pid> <级别>            设置进程优先级 high|above|normal|below|idle\n"
+        "  gopt_cli clean                         清理临时文件（24 小时内文件保留）\n"
         "  gopt_cli fingerprint                 显示本机机器指纹（授权绑定用）\n"
         "  gopt_cli license status              查看授权状态\n"
         "  gopt_cli license activate <code>     安装授权码\n"
@@ -39,15 +42,18 @@ static void PrintUsage() {
         "\n游戏: deltaforce | lol | cs2 | pubg | valorant | apex | dota2 | ow\n"
         "\n选项 (apply):\n"
         "  --game-exe <path>   工具代启动游戏（CREATE_SUSPENDED → 设置 → Resume）\n"
-        "  --power             允许切换高性能电源方案（Pro，需管理员，默认关闭）\n"
+        "  --power             允许切换高性能电源方案（需管理员，默认关闭；功能本身免费）\n"
         "  --lang zh|en        界面语言（默认 zh）\n"
-        "\n版本: 免费版 = 优先级 + CPU 亲和性；Pro = 额外支持 电源/驱动帧延迟/工作集。\n"
+        "\n所有功能免费：电源切换/驱动帧延迟/工作集等全部优化项对所有人开放。\n"
         "安全边界: 无注入、无内核 Hook；优先级上限 HIGH；全部修改可一键回滚。",
         "\nUsage:\n"
         "  gopt_cli status                      Show hardware, presets and license\n"
         "  gopt_cli apply <game> [options]      Apply optimization (auto snapshot + watchdog)\n"
         "  gopt_cli rollback                    Rollback the last optimization\n"
         "  gopt_cli rollback-all                Rollback everything\n"
+        "  gopt_cli list                         Show running supported games (priority/affinity)\n"
+        "  gopt_cli prio <pid> <level>           Set process priority high|above|normal|below|idle\n"
+        "  gopt_cli clean                        Clean temp files (files < 24h are kept)\n"
         "  gopt_cli fingerprint                 Show machine fingerprint (for licensing)\n"
         "  gopt_cli license status              Show license status\n"
         "  gopt_cli license activate <code>     Install a license code\n"
@@ -55,9 +61,9 @@ static void PrintUsage() {
         "\nGames: deltaforce | lol | cs2 | pubg | valorant | apex | dota2 | ow\n"
         "\nOptions (apply):\n"
         "  --game-exe <path>   Tool starts the game (CREATE_SUSPENDED -> settings -> Resume)\n"
-        "  --power             Allow high-performance power scheme (Pro, admin, off by default)\n"
+        "  --power             Allow high-performance power scheme (admin, off by default; free feature)\n"
         "  --lang zh|en        UI language (default zh)\n"
-        "\nFree = priority + CPU affinity; Pro adds power / frame latency / working set.\n"
+        "\nAll features are free: power scheme / frame latency / working set are open to everyone.\n"
         "Safety: no injection, no kernel hooks; priority capped at HIGH; every change is rollable."));
 }
 
@@ -348,6 +354,34 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(mask));
         }
         return 0;
+    }
+
+    if (cmd == "prio" && argc >= 4) {
+        const unsigned long pid = std::strtoul(argv[2], nullptr, 10);
+        const std::string level = argv[3];
+        DWORD cls = 0;
+        std::string name;
+        if (level == "high") { cls = HIGH_PRIORITY_CLASS; name = T("高（High）", "High"); }
+        else if (level == "above") { cls = ABOVE_NORMAL_PRIORITY_CLASS; name = T("高于正常（AboveNormal）", "AboveNormal"); }
+        else if (level == "normal") { cls = NORMAL_PRIORITY_CLASS; name = T("正常（Normal）", "Normal"); }
+        else if (level == "below") { cls = BELOW_NORMAL_PRIORITY_CLASS; name = T("低于正常（BelowNormal）", "BelowNormal"); }
+        else if (level == "idle") { cls = IDLE_PRIORITY_CLASS; name = T("空闲（Idle）", "Idle"); }
+        else {
+            std::puts(T("用法: gopt_cli prio <pid> high|above|normal|below|idle",
+                        "Usage: gopt_cli prio <pid> high|above|normal|below|idle"));
+            return 1;
+        }
+        HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (h == nullptr) {
+            std::printf(T("无法打开进程 %lu（可能已退出或无权限）。\n",
+                          "Cannot open process %lu (may have exited or no access).\n"), pid);
+            return 1;
+        }
+        const bool ok = gopt::HAL::SetProcessPriority(h, cls);
+        CloseHandle(h);
+        std::printf("%s %lu -> %s: %s\n", T("进程", "Process"), pid, name.c_str(),
+                    ok ? T("成功", "OK") : T("失败", "FAILED"));
+        return ok ? 0 : 1;
     }
 
     if (cmd == "startup") {

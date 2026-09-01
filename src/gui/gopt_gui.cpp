@@ -40,7 +40,7 @@ static HWND g_combo, g_path, g_args, g_power, g_btnSave, g_btnBrowse, g_btnApply
 // 系统调优页
 static HWND g_btnTuneHigh, g_btnTuneBal, g_btnTuneRestore, g_btnClean;
 // 进程页
-static HWND g_listProc, g_btnProcRefresh;
+static HWND g_listProc, g_btnProcRefresh, g_btnProcHigh, g_btnProcNorm;
 // 启动项页
 static HWND g_listStartup, g_btnStartupRefresh, g_btnStartupDisable, g_btnStartupEnable, g_btnStartupRestore;
 // 总览卡片
@@ -63,7 +63,7 @@ enum {
     IDC_COMBO = 302, IDC_PATH = 303, IDC_BROWSE = 304, IDC_ARGS = 305, IDC_SAVE = 306,
     IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309,
     IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403, IDC_CLEAN = 404,
-    IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502,
+    IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502, IDC_PROC_HIGH = 503, IDC_PROC_NORM = 504,
     IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
     IDC_STARTUP_ENABLE = 604, IDC_STARTUP_RESTORE = 605,
 };
@@ -218,9 +218,20 @@ static void RefreshProcList() {
         SendMessageW(g_listProc, LB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(Utf8ToWide(T("（没有运行中的支持游戏）", "(no supported games running)")).c_str()));
     } else {
-        for (const auto& [id, pid] : g_procs)
+        for (const auto& [id, pid] : g_procs) {
+            DWORD pri = 0;
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (h != nullptr) { pri = GetPriorityClass(h); CloseHandle(h); }
+            const char* priName = pri == HIGH_PRIORITY_CLASS ? T("高", "High")
+                               : pri == ABOVE_NORMAL_PRIORITY_CLASS ? T("高于正常", "AboveNormal")
+                               : pri == BELOW_NORMAL_PRIORITY_CLASS ? T("低于正常", "BelowNormal")
+                               : pri == IDLE_PRIORITY_CLASS ? T("空闲", "Idle")
+                               : T("正常", "Normal");
             SendMessageW(g_listProc, LB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(Utf8ToWide(gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")").c_str()));
+                         reinterpret_cast<LPARAM>(Utf8ToWide(
+                             gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")  ["
+                             + T("优先级", "Prio") + ": " + priName + "]").c_str()));
+        }
     }
     SendMessageW(g_listProc, LB_SETCURSEL, 0, 0);
     UpdateFooter();
@@ -335,6 +346,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             p = g_pages[3];
             g_listProc = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 460, 200, IDC_PROCLIST);
             g_btnProcRefresh = makeCtl(p, L"BUTTON", L"", 0, 490, 16, 90, 26, IDC_PROC_REFRESH);
+            g_btnProcHigh = makeCtl(p, L"BUTTON", L"", 0, 490, 60, 90, 26, IDC_PROC_HIGH);
+            g_btnProcNorm = makeCtl(p, L"BUTTON", L"", 0, 490, 104, 90, 26, IDC_PROC_NORM);
             g_hint3 = makeCtl(p, L"STATIC", L"", 0, 18, 232, 720, 44, 0);
             // 【页4 启动项】
             p = g_pages[4];
@@ -369,6 +382,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             Label(g_btnTuneRestore, "恢复调优", "Restore Tune");
             Label(g_btnClean, "清理临时文件", "Clean Temp");
             Label(g_btnProcRefresh, "刷新", "Refresh");
+            Label(g_btnProcHigh, "提升优先级", "Boost Priority");
+            Label(g_btnProcNorm, "恢复正常", "Reset Normal");
             Label(g_btnStartupRefresh, "刷新", "Refresh");
             Label(g_btnStartupDisable, "禁用选中", "Disable");
             Label(g_btnStartupEnable, "启用选中", "Enable");
@@ -555,6 +570,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == IDC_PROC_REFRESH) { RefreshProcList(); return 0; }
+            if (id == IDC_PROC_HIGH || id == IDC_PROC_NORM) {
+                const int sel = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
+                if (sel < 0 || sel >= static_cast<int>(g_procs.size()) || g_procs.empty()) {
+                    AddLog(std::string(T("请先在列表中选择一个游戏进程。\n\n",
+                                         "Select a game process first.\n\n")));
+                    return 0;
+                }
+                const uint32_t pid = g_procs[sel].second;
+                const DWORD cls = (id == IDC_PROC_HIGH) ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS;
+                HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                if (h == nullptr) {
+                    AddLog(std::string(T("无法打开进程（可能已退出或无权限）。\n\n",
+                                         "Cannot open process (exited or no access).\n\n")));
+                    return 0;
+                }
+                const bool ok = gopt::HAL::SetProcessPriority(h, cls);
+                CloseHandle(h);
+                AddLog(std::string(T("进程 ", "Process ")) + std::to_string(pid) + " -> "
+                       + (id == IDC_PROC_HIGH ? T("高优先级", "High priority")
+                                             : T("正常优先级", "Normal priority"))
+                       + ": " + (ok ? "OK" : "FAIL") + "\n\n");
+                RefreshProcList();
+                return 0;
+            }
             if (id == IDC_STARTUP_REFRESH) { RefreshStartupList(); return 0; }
             if (id == IDC_STARTUP_RESTORE) {
                 const int n = StartupManager::RestoreAll();
