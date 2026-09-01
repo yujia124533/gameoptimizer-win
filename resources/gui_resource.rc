@@ -1,0 +1,31 @@
+#include <winver.h>
+
+1 ICON "resources\\icon.ico"
+1 24 "resources\\manifest.xml"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,3,0
+PRODUCTVERSION  1,0,3,0
+FILEFLAGSMASK   0x3fL
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",      "GameOptimizer"
+            VALUE "FileDescription",  "GameOptimizer GUI - Windows Game Optimizer (Hardware-agnostic)"
+            VALUE "FileVersion",      "1.0.3"
+            VALUE "InternalName",     "gopt_gui"
+            VALUE "OriginalFilename", "gopt_gui.exe"
+            VALUE "ProductName",      "GameOptimizer"
+            VALUE "ProductVersion",   "1.0.3"
+            VALUE "LegalCopyright",   "MIT License"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(GameOptimizer
     VERSION 0.1.0
     DESCRIPTION "Windows 游戏优化工具：硬件无感适配 + 预设策略 + 安全回滚"
-    LANGUAGES CXX)
+    LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,13 @@ else()
     target_compile_options(gameopt_core PRIVATE -Wall -Wextra)
 endif()
 
-# ---- 临时验证入口（第 5 步并入 AppCore） ----
-add_executable(gopt_cli tools/cli_main.cpp)
+# ---- CLI（含版本资源） ----
+add_executable(gopt_cli tools/cli_main.cpp resources/resource.rc)
 target_link_libraries(gopt_cli PRIVATE gameopt_core)
+
+# ---- 原生 GUI（多面板界面，含独立版本资源） ----
+add_executable(gopt_gui WIN32
+    src/gui/gopt_gui.cpp
+    resources/gui_resource.rc
+)
+target_link_libraries(gopt_gui PRIVATE gameopt_core user32 gdi32 comdlg32)

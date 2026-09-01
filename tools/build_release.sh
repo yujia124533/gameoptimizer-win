@@ -33,7 +33,8 @@ g++ -std=c++17 -O2 -static -Isrc $SRCS tools/cli_main.cpp build/resource.o \
     -o build/gopt_cli.exe -ldxgi -ladvapi32 -lpowrprof
 
 echo "== 编译 GUI =="
-g++ -std=c++17 -O2 -static -Isrc src/gui/gopt_gui.cpp $SRCS build/resource.o \
+windres resources/gui_resource.rc -O coff -o build/gui_resource.o
+g++ -std=c++17 -O2 -static -Isrc src/gui/gopt_gui.cpp $SRCS build/gui_resource.o \
     -o build/gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 \
     -ldxgi -ladvapi32 -lpowrprof
 

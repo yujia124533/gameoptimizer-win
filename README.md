@@ -63,10 +63,10 @@ build\Release\gopt_cli.exe
 
 :: 便携 GCC（w64devkit）
 powershell -ExecutionPolicy Bypass -File tools\build_w64devkit.ps1
-build\gopt_cli.exe
+build\gopt_cli.exe     CLI（脚本同时产出 build\gopt_gui.exe 原生 GUI）
 ```
 
-GUI 构建：把 `src\gui\gopt_gui.cpp` 与核心源码一并编译（`-mwindows`），或用脚本/CMake 增加该源文件。
+GUI 构建：CMake 已含 `gopt_gui` 目标（含独立版本资源 `resources\gui_resource.rc`）；便携脚本 `tools\build_w64devkit.ps1` 同样产出 GUI。
 
 ## 目录结构
 

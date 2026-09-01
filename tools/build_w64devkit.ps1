@@ -29,21 +29,35 @@ New-Item -ItemType Directory -Force -Path $build | Out-Null
 # 编译 Windows 版本资源（windres），随 exe 链接
 $windres = Join-Path $wbin "windres.exe"
 & $windres resources\resource.rc -O coff -o $build\resource.o
+& $windres resources\gui_resource.rc -O coff -o $build\gui_resource.o
 
-& $gpp -std=c++17 -O2 -Wall -Wextra -Isrc `
-    src\hardware\HardwareProfile.cpp `
-    src\hardware\HardwareDetector.cpp `
-    src\hal\HAL.cpp `
-    src\preset\GameOptimizationPreset.cpp `
-    src\rollback\SecurityRollback.cpp `
-    src\config\GameConfig.cpp `
-    src\tuning\SystemTuner.cpp `
-    src\tuning\StartupManager.cpp `
-    src\license\License.cpp `
-    src\core\AppCore.cpp `
+$SRCS = @(
+    'src\hardware\HardwareProfile.cpp'
+    'src\hardware\HardwareDetector.cpp'
+    'src\hal\HAL.cpp'
+    'src\preset\GameOptimizationPreset.cpp'
+    'src\rollback\SecurityRollback.cpp'
+    'src\config\GameConfig.cpp'
+    'src\tuning\SystemTuner.cpp'
+    'src\tuning\StartupManager.cpp'
+    'src\license\License.cpp'
+    'src\core\AppCore.cpp'
+)
+
+& $gpp -std=c++17 -O2 -Wall -Wextra -Isrc $SRCS `
     tools\cli_main.cpp `
     build\resource.o `
     -o build\gopt_cli.exe -ldxgi -ladvapi32 -lpowrprof
 
-if ($LASTEXITCODE -ne 0) { Write-Host "编译失败（exit $LASTEXITCODE）" -ForegroundColor Red; exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { Write-Host "CLI 编译失败（exit $LASTEXITCODE）" -ForegroundColor Red; exit $LASTEXITCODE }
 Write-Host "构建成功: $build\gopt_cli.exe" -ForegroundColor Green
+
+# 原生 GUI（多面板界面）
+& $gpp -std=c++17 -O2 -Wall -Wextra -Isrc $SRCS `
+    src\gui\gopt_gui.cpp `
+    build\gui_resource.o `
+    -o build\gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 `
+    -ldxgi -ladvapi32 -lpowrprof
+
+if ($LASTEXITCODE -ne 0) { Write-Host "GUI 编译失败（exit $LASTEXITCODE）" -ForegroundColor Red; exit $LASTEXITCODE }
+Write-Host "构建成功: $build\gopt_gui.exe" -ForegroundColor Green
