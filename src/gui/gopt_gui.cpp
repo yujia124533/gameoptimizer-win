@@ -55,8 +55,13 @@ static double g_progress = 0.0;
 static int g_pendingStart = 0, g_pendingLen = 0;
 static std::vector<gopt::StartupEntry> g_startups;
 static std::vector<std::pair<GameId, uint32_t>> g_procs;
+// 实时 CPU 负载（GetSystemTimes 1 秒定时采样，用于总览页卡片）
+static ULARGE_INTEGER g_cpuIdlePrev = {}, g_cpuKernelPrev = {}, g_cpuUserPrev = {};
+static bool g_cpuPrevValid = false;
+static std::string g_cpuBase;
 
 enum {
+    IDT_LIVE = 101,
     IDC_LANG = 106,
     IDC_NAV0 = 201, IDC_NAV1 = 202, IDC_NAV2 = 203, IDC_NAV3 = 204, IDC_NAV4 = 205,
     IDC_BIGOPT = 301,
@@ -211,6 +216,37 @@ static void SaveCurrentGameConfig() {
            + T(" 的优化启动配置。\n\n", " launch config.\n\n"));
 }
 
+static void UpdateGameHint() {
+    if (!g_hint1 || !g_core) return;
+    const GameId sel = CurrentGame();
+    const gopt::GamePreset p = g_core->ResolvedPreset(sel);
+    std::string txt = std::string(T("玩法：路径留空 → 优化正在运行的游戏；填写该游戏 exe 路径并「保存游戏设置」→「应用优化」会先代启动并自动优化。\n",
+                                    "Tip: leave path empty to optimize a running game; set the exe path + Save, then Apply will launch and optimize it.\n"))
+        + std::string(T("当前游戏: ", "Selected: ")) + gopt::GameIdToString(sel) + " — " + p.description;
+    SetWindowTextW(g_hint1, Utf8ToWide(txt).c_str());
+}
+
+static void RefreshCpuLoad() {
+    if (!g_dashCpu) return;
+    FILETIME idleFt{}, kernelFt{}, userFt{};
+    if (!GetSystemTimes(&idleFt, &kernelFt, &userFt)) return;
+    ULARGE_INTEGER idle{}, kernel{}, user{};
+    idle.HighPart = idleFt.dwHighDateTime; idle.LowPart = idleFt.dwLowDateTime;
+    kernel.HighPart = kernelFt.dwHighDateTime; kernel.LowPart = kernelFt.dwLowDateTime;
+    user.HighPart = userFt.dwHighDateTime; user.LowPart = userFt.dwLowDateTime;
+    std::string pct = "--%";
+    if (g_cpuPrevValid) {
+        const ULONGLONG dI = idle.QuadPart - g_cpuIdlePrev.QuadPart;
+        const ULONGLONG dK = kernel.QuadPart - g_cpuKernelPrev.QuadPart;
+        const ULONGLONG dU = user.QuadPart - g_cpuUserPrev.QuadPart;
+        const ULONGLONG total = dK + dU;
+        if (total > 0) pct = std::to_string(static_cast<int>((total - dI) * 100 / total)) + "%";
+    }
+    g_cpuIdlePrev = idle; g_cpuKernelPrev = kernel; g_cpuUserPrev = user;
+    g_cpuPrevValid = true;
+    SetWindowTextW(g_dashCpu, Utf8ToWide(g_cpuBase + "  [" + std::string(T("当前负载", "load")) + ": " + pct + "]").c_str());
+}
+
 static void RefreshProcList() {
     g_procs = g_core->RunningGames();
     SendMessageW(g_listProc, LB_RESETCONTENT, 0, 0);
@@ -254,9 +290,10 @@ static void RefreshStartupList() {
 static void UpdateDashboard() {
     if (!g_core || !g_dashCpu) return;
     const gopt::HardwareProfile p = g_core->Profile();
-    SetWindowTextW(g_dashCpu, Utf8ToWide("CPU: " + p.cpuModel + "（" + std::to_string(p.physicalCores)
+    g_cpuBase = "CPU: " + p.cpuModel + "（" + std::to_string(p.physicalCores)
         + " " + T("物理核", "cores") + " / " + std::to_string(p.logicalCores) + " "
-        + T("逻辑", "threads") + " @ " + std::to_string(p.cpuBaseFreqMHz) + " MHz）").c_str());
+        + T("逻辑", "threads") + " @ " + std::to_string(p.cpuBaseFreqMHz) + " MHz）";
+    RefreshCpuLoad();
     SetWindowTextW(g_dashGpu, Utf8ToWide("GPU: " + p.gpuVendor + " " + p.gpuModel + "（"
         + std::to_string(p.vramMB / 1024) + " GB，Driver " + p.gpuDriverVersion + "）").c_str());
     SetWindowTextW(g_dashRam, Utf8ToWide("RAM: " + std::to_string(p.systemRamMB / 1024)
@@ -409,10 +446,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 Utf8ToWide(T("所有功能免费 · 无注入、无内核 Hook · 每次优化自动快照可回滚",
                              "All free · no injection, no kernel hooks · auto snapshot each optimize")).c_str());
             RefreshGameList();
+            UpdateGameHint();
             RefreshProcList();
             RefreshStartupList();
             ShowPage(0);
             UpdateDashboard();
+            SetTimer(hwnd, IDT_LIVE, 1000, nullptr);
             AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + "  所有功能免费\n");
             AddLog(T("左侧导航切换功能；一键优化 = 并发处理所有运行中的支持游戏。\n\n",
                      "Use the nav; one-click = concurrent batch optimize of running games.\n\n"));
@@ -500,6 +539,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (id == IDC_LANG && code == CBN_SELCHANGE) {
                 SetLang(SendMessageW(g_lang, CB_GETCURSEL, 0, 0) == 1 ? Lang::En : Lang::Zh);
                 ApplyAllLabels();
+                UpdateGameHint();
                 RefreshProcList();
                 RefreshStartupList();
                 UpdateFooter();
@@ -507,6 +547,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (code == CBN_SELCHANGE && id == IDC_COMBO) {
                 LoadGameConfigToUI();
+                UpdateGameHint();
                 return 0;
             }
             if (code != BN_CLICKED) return 0;
@@ -638,6 +679,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (int i = 0; i < 5; ++i)
                 if (g_pages[i]) MoveWindow(g_pages[i], 222, 62, rc.right - 234, rc.bottom - 300, TRUE);
         } break;
+
+        case WM_TIMER:
+            if (wp == static_cast<WPARAM>(IDT_LIVE)) RefreshCpuLoad();
+            return 0;
 
         case WM_DESTROY:
             PostQuitMessage(0);
