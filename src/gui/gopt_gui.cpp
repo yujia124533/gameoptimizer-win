@@ -7,6 +7,7 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+#include <cmath>
 
 #include "config/GameConfig.h"
 #include "core/AppCore.h"
@@ -47,6 +48,8 @@ static HWND g_listStartup, g_btnStartupRefresh, g_btnStartupDisable, g_btnStartu
 static HWND g_dashHelp, g_dashCpu, g_dashGpu, g_dashRam, g_dashNote;
 // 每页操作提示
 static HWND g_hint1, g_hint2, g_hint3, g_hint4;
+// 科技感优化流程覆盖面板（SS_OWNERDRAW，默认隐藏）
+static HWND g_flowPanel = nullptr;
 
 static int g_page = 0;
 static HFONT g_font = nullptr, g_fontBold = nullptr, g_fontBig = nullptr;
@@ -59,9 +62,20 @@ static std::vector<std::pair<GameId, uint32_t>> g_procs;
 static ULARGE_INTEGER g_cpuIdlePrev = {}, g_cpuKernelPrev = {}, g_cpuUserPrev = {};
 static bool g_cpuPrevValid = false;
 static std::string g_cpuBase;
+// 科技感优化流程面板状态（一键优化 / 应用优化时显示）
+struct FlowStepUI {
+    std::string label;
+    bool ok = false, fail = false;
+    int elapsedMs = 0;
+};
+static std::vector<FlowStepUI> g_flowSteps;
+static bool g_flowActive = false;
+static bool g_flowHasFail = false;
+static int g_flowAngle = 0;
 
 enum {
     IDT_LIVE = 101,
+    IDT_FLOW = 102,
     IDC_LANG = 106,
     IDC_NAV0 = 201, IDC_NAV1 = 202, IDC_NAV2 = 203, IDC_NAV3 = 204, IDC_NAV4 = 205,
     IDC_BIGOPT = 301,
@@ -71,6 +85,7 @@ enum {
     IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502, IDC_PROC_HIGH = 503, IDC_PROC_NORM = 504,
     IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
     IDC_STARTUP_ENABLE = 604, IDC_STARTUP_RESTORE = 605,
+    ID_FLOWPANEL = 700,
 };
 
 #define WM_APP_UIEVENT (WM_APP + 1)
@@ -126,6 +141,16 @@ static void RenderFlowEvent(const gopt::AppCore::FlowEvent& e) {
             AddLog("  " + std::to_string(e.step) + ") " + e.text + ": "
                    + T("处理中...", "running...") + "\n");
             g_pendingLen = GetWindowTextLengthW(g_log) - start;
+            // 流程面板登记步骤
+            if (e.step == 1) { g_flowSteps.clear(); g_flowHasFail = false; }
+            if (static_cast<int>(g_flowSteps.size()) < e.step) g_flowSteps.resize(e.step);
+            g_flowSteps[e.step - 1].label = e.text;
+            g_flowActive = true;
+            if (g_flowPanel != nullptr) {
+                ShowWindow(g_flowPanel, SW_SHOW);
+                InvalidateRect(g_flowPanel, nullptr, FALSE);
+            }
+            if (g_hwnd != nullptr) SetTimer(g_hwnd, IDT_FLOW, 80, nullptr);
             break;
         }
         case gopt::AppCore::FlowEvent::StepOk:
@@ -136,6 +161,13 @@ static void RenderFlowEvent(const gopt::AppCore::FlowEvent& e) {
             SendMessageW(g_log, EM_SETSEL, g_pendingStart, g_pendingStart + g_pendingLen);
             SendMessageW(g_log, EM_REPLACESEL, FALSE,
                          reinterpret_cast<LPARAM>(Utf8ToWide(line).c_str()));
+            if (e.step - 1 >= 0 && e.step - 1 < static_cast<int>(g_flowSteps.size())) {
+                FlowStepUI& s = g_flowSteps[e.step - 1];
+                s.ok = (e.kind == gopt::AppCore::FlowEvent::StepOk);
+                s.fail = (e.kind == gopt::AppCore::FlowEvent::StepFail);
+                s.elapsedMs = e.elapsedMs;
+                if (s.fail) g_flowHasFail = true;
+            }
             break;
         }
     }
@@ -394,6 +426,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_btnStartupEnable = makeCtl(p, L"BUTTON", L"", 0, 390, 84, 90, 26, IDC_STARTUP_ENABLE);
             g_btnStartupRestore = makeCtl(p, L"BUTTON", L"", 0, 390, 118, 110, 26, IDC_STARTUP_RESTORE);
             g_hint4 = makeCtl(p, L"STATIC", L"", 0, 18, 232, 720, 44, 0);
+            // 科技感优化流程覆盖面板（默认隐藏；优化流程时置顶显示）
+            g_flowPanel = CreateWindowExW(0, L"STATIC", L"",
+                                          WS_CHILD | SS_OWNERDRAW,
+                                          222, 62, 760, 298, hwnd,
+                                          reinterpret_cast<HMENU>(ID_FLOWPANEL), hInst, nullptr);
+            SetWindowPos(g_flowPanel, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
             // ----- 底部日志 + 状态栏 -----
             g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
@@ -476,6 +514,125 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 RECT tr = r;
                 tr.left += 12;
                 DrawTextW(dc, t.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                return TRUE;
+            }
+            // 科技感优化流程面板
+            if (dis != nullptr && dis->CtlID == ID_FLOWPANEL) {
+                HDC dc = dis->hDC;
+                RECT pr = dis->rcItem;
+                HBRUSH dark = CreateSolidBrush(RGB(11, 18, 32));
+                FillRect(dc, &pr, dark);
+                DeleteObject(dark);
+                HBRUSH nib = CreateSolidBrush(RGB(0, 229, 255));
+                FrameRect(dc, &pr, nib);
+                DeleteObject(nib);
+                SetBkMode(dc, TRANSPARENT);
+                // 标题 + 旋转指示（科技感 spinner）
+                SetTextColor(dc, RGB(0, 229, 255));
+                SelectObject(dc, g_fontBold ? g_fontBold : GetStockObject(DEFAULT_GUI_FONT));
+                RECT tr{pr.left + 16, pr.top + 8, pr.right - 200, pr.top + 34};
+                DrawTextW(dc, Utf8ToWide(T("优化流程", "OPTIMIZING")).c_str(), -1, &tr,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                {
+                    const int cx = pr.right - 26, cy = pr.top + 21;
+                    HPEN ring = CreatePen(PS_SOLID, 2, RGB(30, 41, 59));
+                    HPEN arc = CreatePen(PS_SOLID, 2, RGB(0, 229, 255));
+                    HPEN orp = (HPEN)SelectObject(dc, ring);
+                    Ellipse(dc, cx - 8, cy - 8, cx + 8, cy + 8);
+                    SelectObject(dc, orp);
+                    DeleteObject(ring);
+                    HPEN oap = (HPEN)SelectObject(dc, arc);
+                    const double a0 = g_flowAngle * 3.14159265 / 180.0;
+                    const double a1 = a0 + 4.2;
+                    const int r = 8;
+                    const int x0 = cx + static_cast<int>(r * std::cos(a0));
+                    const int y0 = cy + static_cast<int>(r * std::sin(a0));
+                    const int x1 = cx + static_cast<int>(r * std::cos(a1));
+                    const int y1 = cy + static_cast<int>(r * std::sin(a1));
+                    const int xt = cx + static_cast<int>(r * 0.2 * std::cos(a0 + 2.1));
+                    const int yt = cy + static_cast<int>(r * 0.2 * std::sin(a0 + 2.1));
+                    POINT pts[3] = {{x0, y0}, {x1, y1}, {xt, yt}};
+                    Polygon(dc, pts, 3);
+                    SelectObject(dc, oap);
+                    DeleteObject(arc);
+                }
+                // 扫描线动画
+                const int sx = pr.left + 8 + (g_flowAngle % 360) * (pr.right - pr.left - 24) / 360;
+                HBRUSH scan = CreateSolidBrush(RGB(34, 211, 238));
+                RECT sl{sx, pr.top + 2, sx + 36, pr.top + 4};
+                FillRect(dc, &sl, scan);
+                DeleteObject(scan);
+                // 大号百分比
+                const int pctV = static_cast<int>(g_progress * 100.0 + 0.5);
+                SelectObject(dc, g_fontBig ? g_fontBig : GetStockObject(DEFAULT_GUI_FONT));
+                SetTextColor(dc, RGB(255, 255, 255));
+                RECT pb{pr.right - 190, pr.top + 4, pr.right - 48, pr.top + 52};
+                DrawTextW(dc, Utf8ToWide(std::to_string(pctV) + "%").c_str(), -1, &pb,
+                          DT_RIGHT | DT_TOP | DT_SINGLELINE);
+                // 步骤列表
+                SelectObject(dc, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT));
+                int y = pr.top + 48;
+                int curIdx = -1;
+                for (size_t i = 0; i < g_flowSteps.size(); ++i) {
+                    if (!g_flowSteps[i].ok && !g_flowSteps[i].fail) { curIdx = static_cast<int>(i); break; }
+                }
+                const int total = static_cast<int>(g_flowSteps.size());
+                for (int i = 0; i < total && y < pr.bottom - 40; ++i) {
+                    const FlowStepUI& s = g_flowSteps[static_cast<size_t>(i)];
+                    const bool cur = (i == curIdx);
+                    HBRUSH nb = nullptr;
+                    HPEN np = nullptr;
+                    if (s.ok) { nb = CreateSolidBrush(RGB(34, 197, 94)); np = CreatePen(PS_SOLID, 1, RGB(34, 197, 94)); }
+                    else if (s.fail) { nb = CreateSolidBrush(RGB(239, 68, 68)); np = CreatePen(PS_SOLID, 1, RGB(239, 68, 68)); }
+                    else if (cur) { nb = CreateSolidBrush(RGB(11, 18, 32)); np = CreatePen(PS_SOLID, 2, RGB(0, 229, 255)); }
+                    else { nb = CreateSolidBrush(RGB(30, 41, 59)); np = CreatePen(PS_SOLID, 1, RGB(71, 85, 105)); }
+                    HBRUSH ob = (HBRUSH)SelectObject(dc, nb);
+                    HPEN op = (HPEN)SelectObject(dc, np);
+                    const int ny = y + 2;
+                    Ellipse(dc, pr.left + 20, ny, pr.left + 38, ny + 18);
+                    SelectObject(dc, ob);
+                    SelectObject(dc, op);
+                    DeleteObject(nb);
+                    DeleteObject(np);
+                    const std::string mark = s.ok ? "\xE2\x88\x9A"          // √
+                                             : s.fail ? "\xC3\x97"          // ×
+                                             : cur ? "\xE2\x86\x92"          // →
+                                             : "\xC2\xB7";                  // ·
+                    SetTextColor(dc, s.ok ? RGB(74, 222, 128) : s.fail ? RGB(248, 113, 113)
+                                       : cur ? RGB(0, 229, 255) : RGB(100, 116, 139));
+                    RECT mr{pr.left + 20, ny, pr.left + 38, ny + 18};
+                    DrawTextW(dc, Utf8ToWide(mark).c_str(), -1, &mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    SetTextColor(dc, cur ? RGB(255, 255, 255) : RGB(148, 163, 184));
+                    RECT lr{pr.left + 52, ny - 2, pr.right - 150, ny + 20};
+                    DrawTextW(dc, Utf8ToWide(s.label).c_str(), -1, &lr,
+                              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    std::string st;
+                    if (s.ok) st = "OK · " + std::to_string(s.elapsedMs) + " ms";
+                    else if (s.fail) st = "FAIL · " + std::to_string(s.elapsedMs) + " ms";
+                    else if (cur) st = T("运行中…", "running…");
+                    SetTextColor(dc, s.ok ? RGB(74, 222, 128) : s.fail ? RGB(248, 113, 113) : RGB(34, 211, 238));
+                    RECT sr{pr.right - 150, ny - 2, pr.right - 16, ny + 20};
+                    DrawTextW(dc, Utf8ToWide(st).c_str(), -1, &sr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                    y += 26;
+                }
+                // 底部进度条 + 摘要
+                RECT pbt{pr.left + 16, pr.bottom - 26, pr.right - 16, pr.bottom - 20};
+                HBRUSH bgT2 = CreateSolidBrush(RGB(30, 41, 59));
+                FillRect(dc, &pbt, bgT2);
+                DeleteObject(bgT2);
+                const int pw2 = static_cast<int>((pbt.right - pbt.left) * g_progress);
+                RECT pbf = pbt;
+                pbf.right = pbt.left + pw2;
+                HBRUSH fgT = CreateSolidBrush(RGB(0, 229, 255));
+                FillRect(dc, &pbf, fgT);
+                DeleteObject(fgT);
+                SetTextColor(dc, RGB(148, 163, 184));
+                RECT info{pr.left + 16, pr.bottom - 18, pr.right - 16, pr.bottom - 2};
+                const std::string sum = std::string(T("第 ", "Step "))
+                    + std::to_string((curIdx < 0 ? total : curIdx + 1)) + "/" + std::to_string(total)
+                    + " · " + (g_flowHasFail ? T("存在失败项（可随时回滚）", "has failures (rollback anytime)")
+                                             : T("自动快照已就绪，可随时回滚", "auto snapshot ready, rollback anytime"));
+                DrawTextW(dc, Utf8ToWide(sum).c_str(), -1, &info, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                 return TRUE;
             }
             break;
@@ -666,6 +823,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_APP_FINISH: {
             AddLog("\n\n");
             g_progress = 0.0;
+            g_flowActive = false;
+            if (g_flowPanel != nullptr) ShowWindow(g_flowPanel, SW_HIDE);
+            if (g_hwnd != nullptr) KillTimer(g_hwnd, IDT_FLOW);
             RefreshProcList();
             UpdateDashboard();
             InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -678,10 +838,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             MoveWindow(g_footer, 12, rc.bottom - 28, rc.right - 24, 20, TRUE);
             for (int i = 0; i < 5; ++i)
                 if (g_pages[i]) MoveWindow(g_pages[i], 222, 62, rc.right - 234, rc.bottom - 300, TRUE);
+            if (g_flowPanel) MoveWindow(g_flowPanel, 222, 62, rc.right - 234, rc.bottom - 300, TRUE);
         } break;
 
         case WM_TIMER:
             if (wp == static_cast<WPARAM>(IDT_LIVE)) RefreshCpuLoad();
+            if (wp == static_cast<WPARAM>(IDT_FLOW)) {
+                g_flowAngle = (g_flowAngle + 4) % 360;
+                if (g_flowPanel != nullptr) InvalidateRect(g_flowPanel, nullptr, FALSE);
+            }
             return 0;
 
         case WM_DESTROY:
