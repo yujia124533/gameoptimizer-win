@@ -194,6 +194,10 @@ int main(int argc, char** argv) {
                     gopt::HAL::IsDriverFrameLatencySupported(core.Profile())
                         ? T("支持", "supported")
                         : T("不支持（将降级跳过）", "unsupported (degraded)"));
+        std::printf("%s: %s\n", T("提权状态", "Elevation"),
+                    gopt::HAL::IsElevated()
+                        ? T("已提权（全部功能可用）", "elevated (all features available)")
+                        : T("未提权（电源/系统调优等需管理员运行）", "not elevated (power/tune need admin)"));
         return 0;
     }
 

@@ -81,6 +81,10 @@ public:
     static std::string LastErrorText();
     static void ClearLastError();
 
+    // ---------------- 权限检测 ----------------
+    // 当前进程是否以管理员权限（已提权）运行；未提权时电源/调优/注册表项会失败
+    static bool IsElevated();
+
 private:
     static std::string& LastErrorStorage();
 };

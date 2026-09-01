@@ -314,4 +314,16 @@ bool HAL::SetDriverFrameLatency(const std::wstring& gameExeName, uint32_t maxFra
     return false;
 }
 
+// ---------------- 权限检测 ----------------
+
+bool HAL::IsElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION te{};
+    DWORD len = 0;
+    const bool ok = GetTokenInformation(token, TokenElevation, &te, sizeof(te), &len);
+    CloseHandle(token);
+    return ok && te.TokenIsElevated != 0;
+}
+
 }  // namespace gopt

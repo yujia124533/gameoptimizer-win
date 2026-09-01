@@ -72,22 +72,35 @@ bool RunPowercfgIdx(const std::string& idx, int value) {
     const int rc2 = std::system(cmdD.c_str());
     return rc1 == 0 && rc2 == 0;
 }
-// 安全临时清理（Wise 风格：递归 %TEMP%，占用/锁定项自动跳过）
+// 安全临时清理（Wise 风格：递归 %TEMP%，占用/锁定项自动跳过；
+// 安全策略：24 小时内修改过的文件视为"使用中"，一律保留不删）
+constexpr ULONGLONG kKeepRecent100ns = 24ull * 3600ull * 10000000ull;
 uint64_t g_cleanFreed = 0;
-int g_cleanDeleted = 0, g_cleanSkipped = 0;
+int g_cleanDeleted = 0, g_cleanSkipped = 0, g_cleanKept = 0;
 void CleanDir(const std::wstring& dir, int depth) {
     if (depth > 4) return;
     WIN32_FIND_DATAW fd{};
     HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
     if (h == INVALID_HANDLE_VALUE) return;
+    FILETIME nowFt{};
+    GetSystemTimeAsFileTime(&nowFt);
+    ULARGE_INTEGER now{};
+    now.HighPart = nowFt.dwHighDateTime;
+    now.LowPart = nowFt.dwLowDateTime;
     do {
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
         const std::wstring path = dir + L"\\" + fd.cFileName;
+        ULARGE_INTEGER ft{};
+        ft.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        ft.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        const bool stale = now.QuadPart >= ft.QuadPart + kKeepRecent100ns;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             CleanDir(path, depth + 1);
-            if (RemoveDirectoryW(path.c_str())) ++g_cleanDeleted;
+            if (!stale) { ++g_cleanKept; }
+            else if (RemoveDirectoryW(path.c_str())) ++g_cleanDeleted;
             else ++g_cleanSkipped;
         } else {
+            if (!stale) { ++g_cleanKept; continue; }
             ULARGE_INTEGER sz{};
             sz.LowPart = fd.nFileSizeLow;
             sz.HighPart = fd.nFileSizeHigh;
@@ -246,13 +259,15 @@ std::string SystemTuner::CleanTemp() {
     g_cleanFreed = 0;
     g_cleanDeleted = 0;
     g_cleanSkipped = 0;
+    g_cleanKept = 0;
     CleanDir(dir, 0);
     std::ostringstream os;
     os << "== 临时文件清理 ==\n";
     os << "  目录: " << WideToUtf8(dir.c_str()) << "\n";
     os << "  已清理 " << g_cleanDeleted << " 项，释放约 "
        << (g_cleanFreed / (1024ull * 1024ull)) << " MB";
-    if (g_cleanSkipped > 0) os << "（跳过 " << g_cleanSkipped << " 个占用/锁定项，属正常）";
+    if (g_cleanSkipped > 0) os << "；跳过 " << g_cleanSkipped << " 个占用/锁定项（属正常）";
+    if (g_cleanKept > 0) os << "；保留 " << g_cleanKept << " 项（24 小时内修改，安全策略）";
     os << "\n";
     return os.str();
 }

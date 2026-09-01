@@ -147,6 +147,9 @@ static void UpdateFooter() {
     const std::string txt = std::string(T("全部免费", "Free")) + " · " + T("内存", "RAM") + " "
         + std::to_string(p.availableRamMB / 1024) + "/" + std::to_string(p.systemRamMB / 1024)
         + " GB · " + T("电源", "Power") + " " + power
+        + " · " + (gopt::HAL::IsElevated()
+                       ? T("已提权", "Elevated")
+                       : T("未提权（部分功能需管理员）", "Not elevated (some features need admin)"))
         + (g_procs.empty() ? "" : (std::string(" · ") + T("运行中", "Running") + " " + std::to_string(g_procs.size())));
     SetWindowTextW(g_footer, Utf8ToWide(txt).c_str());
 }
