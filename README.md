@@ -12,8 +12,10 @@
 
 自动识别 CPU/GPU/内存 → 按游戏预设应用进程优先级/CPU 亲和性/工作集/电源策略 → 每次修改自动快照，秒级回滚。
 
-## 🎉 v1.0.1 更新日志
+## 🎉 v1.0.3 更新日志
 
+- **垃圾清理**：`gopt_cli clean` 与 GUI「系统调优」页「清理临时文件」按钮——安全清理 `%TEMP%`（占用/锁定项自动跳过），Wise 365 风格
+- **运行中游戏概览**：`gopt_cli list` 显示已运行的受支持游戏的优先级/亲和性
 - **所有功能免费**：电源/帧延迟/工作集等全部优化项对所有人开放，无任何授权限制
 - **一键性能优化**：**无需先启动游戏**——自动检测运行中的游戏并优化；无游戏时做系统级性能优化
 - **每款游戏「优化启动」配置**：保存 exe 路径/启动参数/电源等开关，持久化到 `games.conf`
@@ -42,6 +44,8 @@ gopt_cli status                        查看硬件/预设/授权
 gopt_cli apply cs2                     优化 cs2（游戏运行中 attach）
 gopt_cli apply cs2 --game-exe "<路径>"  代启动游戏
 gopt_cli rollback / rollback-all       回滚
+gopt_cli list                          运行中的游戏概览（优先级/亲和性）
+gopt_cli clean                         清理临时文件（%TEMP%，锁定项跳过）
 gopt_cli fingerprint                   本机机器指纹（授权绑定）
 gopt_cli license status / activate <码> 授权
 gopt_cli --version                     版本

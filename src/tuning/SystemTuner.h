@@ -24,6 +24,9 @@ public:
     // 恢复最近一次调优（方案 + 注册表 + 处理器状态回默认档）
     static std::string Restore();
 
+    // 安全清理用户临时目录（%TEMP%）：占用/锁定项跳过，返回清理结果
+    static std::string CleanTemp();
+
 private:
     static std::string SnapshotPath();
     static bool ReadPrioritySeparation(unsigned long* out);

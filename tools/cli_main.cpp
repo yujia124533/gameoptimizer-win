@@ -379,6 +379,10 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (cmd == "clean") {
+        std::puts(gopt::SystemTuner::CleanTemp().c_str());
+        return 0;
+    }
     if (cmd == "rollback") {
         AppCore core(cfg);
         std::puts(core.Rollback().c_str());

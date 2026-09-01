@@ -72,6 +72,31 @@ bool RunPowercfgIdx(const std::string& idx, int value) {
     const int rc2 = std::system(cmdD.c_str());
     return rc1 == 0 && rc2 == 0;
 }
+// 安全临时清理（Wise 风格：递归 %TEMP%，占用/锁定项自动跳过）
+uint64_t g_cleanFreed = 0;
+int g_cleanDeleted = 0, g_cleanSkipped = 0;
+void CleanDir(const std::wstring& dir, int depth) {
+    if (depth > 4) return;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        const std::wstring path = dir + L"\\" + fd.cFileName;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            CleanDir(path, depth + 1);
+            if (RemoveDirectoryW(path.c_str())) ++g_cleanDeleted;
+            else ++g_cleanSkipped;
+        } else {
+            ULARGE_INTEGER sz{};
+            sz.LowPart = fd.nFileSizeLow;
+            sz.HighPart = fd.nFileSizeHigh;
+            if (DeleteFileW(path.c_str())) { g_cleanFreed += sz.QuadPart; ++g_cleanDeleted; }
+            else ++g_cleanSkipped;
+        }
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
 
 }  // namespace
 
@@ -213,5 +238,22 @@ std::string SystemTuner::Restore() {
     os << "  调优已还原。\n";
     return os.str();
 }
-
+std::string SystemTuner::CleanTemp() {
+    wchar_t tmp[MAX_PATH] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring dir(tmp);
+    if (!dir.empty() && dir.back() == L'\\') dir.pop_back();
+    g_cleanFreed = 0;
+    g_cleanDeleted = 0;
+    g_cleanSkipped = 0;
+    CleanDir(dir, 0);
+    std::ostringstream os;
+    os << "== 临时文件清理 ==\n";
+    os << "  目录: " << WideToUtf8(dir.c_str()) << "\n";
+    os << "  已清理 " << g_cleanDeleted << " 项，释放约 "
+       << (g_cleanFreed / (1024ull * 1024ull)) << " MB";
+    if (g_cleanSkipped > 0) os << "（跳过 " << g_cleanSkipped << " 个占用/锁定项，属正常）";
+    os << "\n";
+    return os.str();
+}
 }  // namespace gopt

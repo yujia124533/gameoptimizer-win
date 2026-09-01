@@ -38,7 +38,7 @@ static HWND g_bigOpt = nullptr;                        // 总览：一键优化�
 // 游戏优化页
 static HWND g_combo, g_path, g_args, g_power, g_btnSave, g_btnBrowse, g_btnApply, g_btnRollback;
 // 系统调优页
-static HWND g_btnTuneHigh, g_btnTuneBal, g_btnTuneRestore;
+static HWND g_btnTuneHigh, g_btnTuneBal, g_btnTuneRestore, g_btnClean;
 // 进程页
 static HWND g_listProc, g_btnProcRefresh;
 // 启动项页
@@ -62,7 +62,7 @@ enum {
     IDC_BIGOPT = 301,
     IDC_COMBO = 302, IDC_PATH = 303, IDC_BROWSE = 304, IDC_ARGS = 305, IDC_SAVE = 306,
     IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309,
-    IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403,
+    IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403, IDC_CLEAN = 404,
     IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502,
     IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
     IDC_STARTUP_ENABLE = 604, IDC_STARTUP_RESTORE = 605,
@@ -326,7 +326,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_btnTuneBal = makeCtl(p, L"BUTTON", L"", 0, 18, 84, 200, 40, IDC_TUNE_BAL);
             g_btnTuneRestore = makeCtl(p, L"BUTTON", L"", 0, 18, 138, 200, 40, IDC_TUNE_RESTORE);
             SendMessageW(g_btnTuneHigh, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
-            g_hint2 = makeCtl(p, L"STATIC", L"", 0, 18, 196, 720, 60, 0);
+            g_btnClean = makeCtl(p, L"BUTTON", L"", 0, 18, 192, 200, 40, IDC_CLEAN);
+            g_hint2 = makeCtl(p, L"STATIC", L"", 0, 18, 240, 720, 44, 0);
             // 【页3 进程】
             p = g_pages[3];
             g_listProc = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 460, 200, IDC_PROCLIST);
@@ -363,6 +364,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             Label(g_btnTuneHigh, "高性能档", "High Performance");
             Label(g_btnTuneBal, "平衡档", "Balanced");
             Label(g_btnTuneRestore, "恢复调优", "Restore Tune");
+            Label(g_btnClean, "清理临时文件", "Clean Temp");
             Label(g_btnProcRefresh, "刷新", "Refresh");
             Label(g_btnStartupRefresh, "刷新", "Refresh");
             Label(g_btnStartupDisable, "禁用选中", "Disable");
@@ -541,6 +543,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 AddLog(core->RestoreTune());
                 AddLog("\n\n");
                 delete core;
+                return 0;
+            }
+            if (id == IDC_CLEAN) {
+                AddLog(std::string(T("== 系统清洁 ==\n", "== System clean ==\n")));
+                AddLog(SystemTuner::CleanTemp());
+                AddLog("\n\n");
                 return 0;
             }
             if (id == IDC_PROC_REFRESH) { RefreshProcList(); return 0; }
