@@ -101,7 +101,7 @@ static int RunInstall() {
     RegWriteString(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GameOptimizer",
                    L"DisplayName", L"GameOptimizer");
     RegWriteString(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GameOptimizer",
-                   L"DisplayVersion", L"1.0.0");
+                   L"DisplayVersion", L"1.0.8");
     RegWriteString(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GameOptimizer",
                    L"Publisher", L"GameOptimizer");
     RegWriteString(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GameOptimizer",
@@ -111,7 +111,7 @@ static int RunInstall() {
 
     CoUninitialize();
     MessageBoxW(nullptr,
-                L"GameOptimizer v1.0.1 安装完成！\n"
+                L"GameOptimizer v1.0.8 安装完成！\n"
                 L"所有功能免费。使用：开始菜单 -> GameOptimizer，或运行\n"
                 L"%LOCALAPPDATA%\\GameOptimizer\\gopt_gui.exe\n",
                 L"GameOptimizer", MB_OK | MB_ICONINFORMATION);

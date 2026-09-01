@@ -31,7 +31,7 @@ Section "Main"
 
   WriteRegStr HKCU "Software\GameOptimizer" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameOptimizer" "DisplayName" "GameOptimizer"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameOptimizer" "DisplayVersion" "1.0.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameOptimizer" "DisplayVersion" "1.0.8"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameOptimizer" "Publisher" "GameOptimizer"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameOptimizer" "DisplayIcon" "$INSTDIR\gopt_cli.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\GameOptimizer" "UninstallString" '"$INSTDIR\uninstall.exe"'
