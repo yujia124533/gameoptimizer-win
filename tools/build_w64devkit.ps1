@@ -56,7 +56,7 @@ Write-Host "构建成功: $build\gopt_cli.exe" -ForegroundColor Green
 & $gpp -std=c++17 -O2 -Wall -Wextra -Isrc $SRCS `
     src\gui\gopt_gui.cpp `
     build\gui_resource.o `
-    -o build\gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 `
+    -o build\gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 -lshell32 `
     -ldxgi -ladvapi32 -lpowrprof
 
 if ($LASTEXITCODE -ne 0) { Write-Host "GUI 编译失败（exit $LASTEXITCODE）" -ForegroundColor Red; exit $LASTEXITCODE }

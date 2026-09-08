@@ -2,7 +2,10 @@
 // 布局：顶部标题栏 · 左侧导航(总览/游戏优化/系统调优/进程/启动项) · 内容区 · 底部日志 + 状态栏
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 
+#include <cstdio>
+#include <map>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -72,6 +75,13 @@ static std::vector<FlowStepUI> g_flowSteps;
 static bool g_flowActive = false;
 static bool g_flowHasFail = false;
 static int g_flowAngle = 0;
+// 系统托盘（Shell_NotifyIcon 稳定 API）：关闭最小化到托盘 + 气泡通知 + 右键菜单
+#define WM_TRAY (WM_APP + 3)
+static NOTIFYICONDATAW g_tray = {};
+static bool g_trayAdded = false;
+static bool g_trayBalloonShown = false;
+// 进程页每进程 CPU%（GetProcessTimes 稳定 API；pid -> (累计CPU tick, 采样时刻ms)）
+static std::map<uint32_t, std::pair<ULONGLONG, ULONGLONG>> g_procCpuPrev;
 
 enum {
     IDT_LIVE = 101,
@@ -281,6 +291,10 @@ static void RefreshCpuLoad() {
 
 static void RefreshProcList() {
     g_procs = g_core->RunningGames();
+    const ULONGLONG nowMs = GetTickCount64();
+    int cores = g_core->Profile().logicalCores;
+    if (cores < 1) cores = 1;
+    const int selBefore = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
     SendMessageW(g_listProc, LB_RESETCONTENT, 0, 0);
     if (g_procs.empty()) {
         SendMessageW(g_listProc, LB_ADDSTRING, 0,
@@ -288,20 +302,53 @@ static void RefreshProcList() {
     } else {
         for (const auto& [id, pid] : g_procs) {
             DWORD pri = 0;
+            ULONGLONG cpuTicks = 0;
             HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            if (h != nullptr) { pri = GetPriorityClass(h); CloseHandle(h); }
+            if (h != nullptr) {
+                pri = GetPriorityClass(h);
+                FILETIME c{}, e{}, k{}, u{};
+                if (GetProcessTimes(h, &c, &e, &k, &u)) {
+                    ULARGE_INTEGER kk{}, uu{};
+                    kk.HighPart = k.dwHighDateTime; kk.LowPart = k.dwLowDateTime;
+                    uu.HighPart = u.dwHighDateTime; uu.LowPart = u.dwLowDateTime;
+                    cpuTicks = kk.QuadPart + uu.QuadPart;
+                }
+                CloseHandle(h);
+            }
             const char* priName = pri == HIGH_PRIORITY_CLASS ? T("高", "High")
                                : pri == ABOVE_NORMAL_PRIORITY_CLASS ? T("高于正常", "AboveNormal")
                                : pri == BELOW_NORMAL_PRIORITY_CLASS ? T("低于正常", "BelowNormal")
                                : pri == IDLE_PRIORITY_CLASS ? T("空闲", "Idle")
                                : T("正常", "Normal");
+            // 用 GetProcessTimes 差值计算每进程 CPU%（相对上次采样；稳定官方 API）
+            char cpuBuf[24] = {};
+            auto it = g_procCpuPrev.find(pid);
+            if (it != g_procCpuPrev.end()) {
+                const ULONGLONG dTicks = cpuTicks - it->second.first;
+                const ULONGLONG dMs = nowMs - it->second.second;
+                if (dMs > 50) {
+                    const double pct = 100.0 * static_cast<double>(dTicks) / (static_cast<double>(dMs) * 10000.0 * cores);
+                    std::snprintf(cpuBuf, sizeof(cpuBuf), "  [CPU: %.1f%%]", pct);
+                }
+            }
+            g_procCpuPrev[pid] = {cpuTicks, nowMs};
             SendMessageW(g_listProc, LB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(Utf8ToWide(
                              gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")  ["
-                             + T("优先级", "Prio") + ": " + priName + "]").c_str()));
+                             + T("优先级", "Prio") + ": " + priName + "]" + cpuBuf).c_str()));
+        }
+        // 清理已退出的进程采样缓存
+        for (auto it = g_procCpuPrev.begin(); it != g_procCpuPrev.end();) {
+            bool alive = false;
+            for (const auto& p : g_procs) if (p.second == it->first) { alive = true; break; }
+            if (!alive) it = g_procCpuPrev.erase(it);
+            else ++it;
         }
     }
-    SendMessageW(g_listProc, LB_SETCURSEL, 0, 0);
+    if (!g_procs.empty()) {
+        const int n = static_cast<int>(g_procs.size());
+        SendMessageW(g_listProc, LB_SETCURSEL, 0, selBefore >= 0 && selBefore < n ? selBefore : 0);
+    }
     UpdateFooter();
 }
 
@@ -338,6 +385,44 @@ static void ShowPage(int page) {
     for (int i = 0; i < 5; ++i)
         if (g_pages[i] != nullptr) ShowWindow(g_pages[i], i == page ? SW_SHOW : SW_HIDE);
     if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, TRUE);
+}
+
+// ---------- 系统托盘（Shell_NotifyIcon 稳定 API） ----------
+static void TrayAdd() {
+    if (g_trayAdded || g_hwnd == nullptr) return;
+    ZeroMemory(&g_tray, sizeof(g_tray));
+    g_tray.cbSize = sizeof(g_tray);
+    g_tray.hWnd = g_hwnd;
+    g_tray.uID = 1;
+    g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_tray.uCallbackMessage = WM_TRAY;
+    HINSTANCE hi = GetModuleHandleW(nullptr);
+    g_tray.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(1));  // 应用图标（资源 1）
+    if (g_tray.hIcon == nullptr) g_tray.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+    lstrcpynW(g_tray.szTip, L"GameOptimizer", 64);
+    g_trayAdded = Shell_NotifyIconW(NIM_ADD, &g_tray) != FALSE;
+}
+
+static void TrayRemove() {
+    if (g_trayAdded) {
+        Shell_NotifyIconW(NIM_DELETE, &g_tray);
+        g_trayAdded = false;
+    }
+}
+
+static void TrayBalloon(const std::wstring& title, const std::wstring& msg) {
+    if (!g_trayAdded) return;
+    g_tray.uFlags = NIF_INFO;
+    g_tray.dwInfoFlags = NIIF_INFO;
+    lstrcpynW(g_tray.szInfoTitle, title.c_str(), 64);
+    lstrcpynW(g_tray.szInfo, msg.c_str(), 256);
+    Shell_NotifyIconW(NIM_MODIFY, &g_tray);
+    g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;  // 恢复供后续修改
+}
+
+static void ShowMainWindow(HWND hwnd) {
+    ShowWindow(hwnd, SW_SHOW);
+    SetForegroundWindow(hwnd);
 }
 
 // ---------- 窗口过程 ----------
@@ -490,6 +575,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowPage(0);
             UpdateDashboard();
             SetTimer(hwnd, IDT_LIVE, 1000, nullptr);
+            TrayAdd();
             AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + "  所有功能免费\n");
             AddLog(T("左侧导航切换功能；一键优化 = 并发处理所有运行中的支持游戏。\n\n",
                      "Use the nav; one-click = concurrent batch optimize of running games.\n\n"));
@@ -826,6 +912,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_flowActive = false;
             if (g_flowPanel != nullptr) ShowWindow(g_flowPanel, SW_HIDE);
             if (g_hwnd != nullptr) KillTimer(g_hwnd, IDT_FLOW);
+            if (g_hwnd != nullptr && !IsWindowVisible(g_hwnd)) {
+                TrayBalloon(L"GameOptimizer",
+                            Utf8ToWide(T("优化完成；点击托盘图标查看结果。",
+                                         "Optimization done; click the tray icon to see results.")));
+            }
             RefreshProcList();
             UpdateDashboard();
             InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -842,14 +933,58 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } break;
 
         case WM_TIMER:
-            if (wp == static_cast<WPARAM>(IDT_LIVE)) RefreshCpuLoad();
+            if (wp == static_cast<WPARAM>(IDT_LIVE)) {
+                RefreshCpuLoad();
+                RefreshProcList();  // 每秒更新进程列表（含 CPU%；n<=8，开销可忽略）
+            }
             if (wp == static_cast<WPARAM>(IDT_FLOW)) {
                 g_flowAngle = (g_flowAngle + 4) % 360;
                 if (g_flowPanel != nullptr) InvalidateRect(g_flowPanel, nullptr, FALSE);
             }
             return 0;
 
+        case WM_CLOSE:
+            // 关闭 = 最小化到托盘（看门狗与后台监控继续；需常驻时更稳妥）
+            if (g_trayAdded) {
+                ShowWindow(hwnd, SW_HIDE);
+                if (!g_trayBalloonShown) {
+                    g_trayBalloonShown = true;
+                    TrayBalloon(L"GameOptimizer",
+                                Utf8ToWide(T("仍在后台运行（看门狗生效中）。双击图标恢复窗口，右键可退出。",
+                                             "Still running in background (watchdog active). Double-click to restore; right-click to exit.")));
+                }
+                return 0;
+            }
+            DestroyWindow(hwnd);
+            return 0;
+
+        case WM_TRAY:
+            switch (static_cast<int>(lp)) {
+                case WM_LBUTTONDBLCLK:
+                    ShowMainWindow(hwnd);
+                    break;
+                case WM_RBUTTONUP: {
+                    POINT pt{};
+                    GetCursorPos(&pt);
+                    HMENU menu = CreatePopupMenu();
+                    AppendMenuW(menu, MF_STRING, 1, L"打开主界面 (Open)");
+                    AppendMenuW(menu, MF_STRING, 2, L"退出 (Exit)");
+                    SetForegroundWindow(hwnd);
+                    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
+                                                   pt.x, pt.y, 0, hwnd, nullptr);
+                    DestroyMenu(menu);
+                    if (cmd == 1) ShowMainWindow(hwnd);
+                    else if (cmd == 2) {
+                        TrayRemove();
+                        DestroyWindow(hwnd);
+                    }
+                    break;
+                }
+            }
+            return 0;
+
         case WM_DESTROY:
+            TrayRemove();
             PostQuitMessage(0);
             break;
 
