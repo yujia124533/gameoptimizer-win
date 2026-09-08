@@ -12,6 +12,26 @@
 
 自动识别 CPU/GPU/内存 → 按游戏预设应用进程优先级/CPU 亲和性/工作集/电源策略 → 每次修改自动快照，秒级回滚。
 
+## English (summary)
+
+A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
+
+- **Safe**: no injection, no kernel hooks (fine with anti-cheat: ACE / VAC / Riot); priority capped at HIGH
+- **Official APIs only**: `SetPriorityClass` / `SetProcessAffinityMask` / `SetProcessWorkingSetSize` / `PowerSetActiveScheme` (+ powercfg / registry)
+- **8 supported games** (Delta Force, LoL, CS2, PUBG, Valorant, Apex, Dota 2, Overwatch 2) with per-game launch config
+- **Rollback-first**: every apply persists snapshots (`%LOCALAPPDATA%\GameOptimizer`), cross-process rollback + watchdog auto-rollback
+- **All features are free** (MIT); native Win32 GUI (zh/en) + CLI `gopt_cli` (status / apply / optimize / rollback / tune / startup / prio / clean ...)
+- CI builds standalone binaries on every tag; releases on GitHub Releases
+
+Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
+
+## 🎉 v1.0.12 更新日志
+
+- **英文概览（README）**：新增 English summary——安全边界、官方 API 清单、快照/看门狗、八大游戏、全免费与贡献指引（开源协作友好）
+- **授权状态文案修正**：`license status` 未激活时明确提示"所有功能免费，无需授权"（消除"无效/未激活"误导）
+- **`optimize --dry-run`**：一键优化也有只读预览——显示将优化的运行中游戏及其预设
+- **自检程序增强**：`gopt_verify.exe` 默认自检追加环境报告（提权状态/电源方案/快照文件存在性）
+
 ## 🎉 v1.0.11 更新日志
 
 - **优化预览（只读）**：`gopt_cli apply <game> --dry-run` 显示将应用的每项优化（预设/优先级/亲和性掩码/工作集/帧延迟/电源/快照看门狗），不修改任何设置——动手前先看清会做什么

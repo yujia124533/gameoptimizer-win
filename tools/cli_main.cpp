@@ -226,8 +226,12 @@ int main(int argc, char** argv) {
         AppCore core(cfg);
         if (sub == "status") {
             const gopt::LicenseInfo li = gopt::License::Check(core.Profile());
-            std::printf("授权状态:\n  %s\n  %s\n", li.valid ? "有效" : "无效/未激活",
-                        li.message.c_str());
+            if (li.valid) {
+                std::printf("授权状态:\n  有效\n  %s\n", li.message.c_str());
+            } else {
+                std::puts(T("授权状态: 未激活（所有功能免费，无需授权；授权仅可选用途）\n  本机指纹可用 `gopt_cli fingerprint` 查看。\n",
+                            "License: not activated (all features are free; license is optional)\n  Use `gopt_cli fingerprint` to see the machine fingerprint.\n"));
+            }
             return 0;
         }
         if (sub == "activate" && argc >= 4) {
@@ -303,6 +307,24 @@ int main(int argc, char** argv) {
 
     if (cmd == "optimize") {
         AppCore core(cfg);
+        if (dryRun) {
+            // 只读预览：显示将优化的运行中游戏及其预设（不修改任何设置）
+            const auto running = core.RunningGames();
+            if (running.empty()) {
+                std::puts(T("预览：无运行中的支持游戏；将执行系统级一键优化（电源方案等，随配置）。",
+                            "Preview: no supported games running; system-level one-click will run (power etc., as configured)."));
+            } else {
+                std::printf("%s:\n", T("预览：将优化以下运行中的支持游戏", "Preview: will optimize these running games"));
+                for (const auto& [id, pid] : running) {
+                    const gopt::GamePreset p = core.ResolvedPreset(id);
+                    std::printf("  %-10s pid=%-7u %s\n",
+                                gopt::GameIdToString(id).c_str(), pid, p.description.c_str());
+                }
+            }
+            std::puts(T("（只读预览，未修改任何设置；快照/看门狗将在实际执行时启用）",
+                        "(read-only preview, nothing modified; snapshot/watchdog start on real execution)"));
+            return 0;
+        }
         if (gameArg.empty()) {
             // 一键+并发：批量处理所有运行中的支持游戏（无游戏则系统级）
             std::puts(core.OptimizeAll().c_str());

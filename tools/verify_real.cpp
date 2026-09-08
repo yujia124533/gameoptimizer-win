@@ -134,6 +134,21 @@ int main(int argc, char** argv) {
 
     const bool appliedOk = (afterPri == HIGH_PRIORITY_CLASS && afterMask == preset.cpuAffinityMask);
     const bool restoredOk = (restorePri == basePri && restoreMask == baseMask);
+    // 环境信息（只读自检：提权 / 电源方案 / 快照文件）
+    GUID g{};
+    const std::string scheme = gopt::HAL::QueryActivePowerScheme(&g) ? gopt::HAL::PowerSchemeName(g)
+                                                                    : std::string("未知");
+    bool spExists = false;
+    {
+        wchar_t base[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) > 0) {
+            const std::wstring sp = std::wstring(base) + L"\\GameOptimizer\\savepoints.txt";
+            spExists = GetFileAttributesW(sp.c_str()) != INVALID_FILE_ATTRIBUTES;
+        }
+    }
+    std::printf("环境    : 提权=%s  电源方案=%s  快照文件=%s\n",
+                gopt::HAL::IsElevated() ? "是" : "否（电源/系统调优需管理员）",
+                scheme.c_str(), spExists ? "存在" : "无（首次优化时创建）");
     std::printf("校验    : 应用生效=%s  回滚恢复=%s\n", appliedOk ? "是" : "否", restoredOk ? "是" : "否");
     std::printf(appliedOk && restoredOk ? "RESULT: PASS\n" : "RESULT: FAIL\n");
 
