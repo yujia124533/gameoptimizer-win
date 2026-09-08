@@ -25,6 +25,12 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
 
+## 🎉 v1.0.14 更新日志
+
+- **RAM 实时化**：总览页内存卡片每秒刷新「当前占用 X%」（GlobalMemoryStatusEx 稳定 API，与 CPU 负载同步）
+- **当前电源方案可见**：系统调优页显示当前电源方案（只读查询）
+- **托盘一键优化**：托盘右键菜单新增「一键优化」——恢复窗口并立即执行（复用完整流程与通知）
+
 ## 🎉 v1.0.13 更新日志
 
 - **实时监视器**：`gopt_cli watch [秒数]`——命令行实时刷新 CPU 占用 / 内存占用 / 运行中的支持游戏（GetSystemTimes + GlobalMemoryStatusEx 稳定 API；Ctrl+C 或按秒数自动退出），观察优化前后效果最直观

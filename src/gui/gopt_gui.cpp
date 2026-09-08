@@ -66,6 +66,7 @@ static std::vector<std::pair<GameId, uint32_t>> g_procs;
 static ULARGE_INTEGER g_cpuIdlePrev = {}, g_cpuKernelPrev = {}, g_cpuUserPrev = {};
 static bool g_cpuPrevValid = false;
 static std::string g_cpuBase;
+static std::string g_ramBase;
 // 科技感优化流程面板状态（一键优化 / 应用优化时显示）
 struct FlowStepUI {
     std::string label;
@@ -288,6 +289,16 @@ static void RefreshCpuLoad() {
     g_cpuIdlePrev = idle; g_cpuKernelPrev = kernel; g_cpuUserPrev = user;
     g_cpuPrevValid = true;
     SetWindowTextW(g_dashCpu, Utf8ToWide(g_cpuBase + "  [" + std::string(T("当前负载", "load")) + ": " + pct + "]").c_str());
+    // RAM 卡片实时刷新（GlobalMemoryStatusEx 稳定 API）
+    if (g_dashRam) {
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof(ms);
+        if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys > 0) {
+            const int ramPct = static_cast<int>((ms.ullTotalPhys - ms.ullAvailPhys) * 100 / ms.ullTotalPhys);
+            SetWindowTextW(g_dashRam, Utf8ToWide(g_ramBase + "  [" + std::string(T("当前占用", "used"))
+                                                 + ": " + std::to_string(ramPct) + "%]").c_str());
+        }
+    }
 }
 
 static void RefreshProcList() {
@@ -373,6 +384,8 @@ static void UpdateDashboard() {
     g_cpuBase = "CPU: " + p.cpuModel + "（" + std::to_string(p.physicalCores)
         + " " + T("物理核", "cores") + " / " + std::to_string(p.logicalCores) + " "
         + T("逻辑", "threads") + " @ " + std::to_string(p.cpuBaseFreqMHz) + " MHz）";
+    g_ramBase = "RAM: " + std::to_string(p.systemRamMB / 1024) + " GB（" + T("可用", "free")
+        + " " + std::to_string(p.availableRamMB / 1024) + " GB）";
     RefreshCpuLoad();
     SetWindowTextW(g_dashGpu, Utf8ToWide("GPU: " + p.gpuVendor + " " + p.gpuModel + "（"
         + std::to_string(p.vramMB / 1024) + " GB，Driver " + p.gpuDriverVersion + "）").c_str());
@@ -545,7 +558,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_btnTuneRestore = makeCtl(p, L"BUTTON", L"", 0, 18, 138, 200, 40, IDC_TUNE_RESTORE);
             SendMessageW(g_btnTuneHigh, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
             g_btnClean = makeCtl(p, L"BUTTON", L"", 0, 18, 192, 200, 40, IDC_CLEAN);
-            g_hint2 = makeCtl(p, L"STATIC", L"", 0, 18, 240, 720, 44, 0);
+            g_hint2 = makeCtl(p, L"STATIC", L"", 0, 18, 240, 720, 100, 0);
             // 【页3 进程】
             p = g_pages[3];
             g_listProc = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 460, 200, IDC_PROCLIST);
@@ -628,12 +641,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             UpdateDashboard();
             SendMessageW(g_autoStart, BM_SETCHECK, AutoStartExists() ? BST_CHECKED : BST_UNCHECKED, 0);
             {
-                // 系统调优页显示按硬件的档位推荐
+                // 系统调优页显示按硬件的档位推荐 + 当前电源方案
                 wchar_t baseTxt[1024] = {};
                 GetWindowTextW(g_hint2, baseTxt, 1024);
                 const bool hi = gopt::SystemTuner::RecommendHighPerf(g_core->Profile());
-                const std::string rec = std::string("\n") + T("本机推荐：", "Recommended: ")
+                std::string rec = std::string("\n") + T("本机推荐：", "Recommended: ")
                     + (hi ? T("高性能档", "high performance") : T("平衡档", "balanced"));
+                GUID scheme{};
+                std::string powerName = T("未知", "unknown");
+                if (gopt::HAL::QueryActivePowerScheme(&scheme)) powerName = gopt::HAL::PowerSchemeName(scheme);
+                rec += std::string("\n") + T("当前电源方案：", "Active power scheme: ") + powerName;
                 std::wstring w(baseTxt);
                 w += Utf8ToWide(rec);
                 SetWindowTextW(g_hint2, w.c_str());
@@ -1039,12 +1056,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     GetCursorPos(&pt);
                     HMENU menu = CreatePopupMenu();
                     AppendMenuW(menu, MF_STRING, 1, L"打开主界面 (Open)");
+                    AppendMenuW(menu, MF_STRING, 3, L"一键优化 (One-click Boost)");
                     AppendMenuW(menu, MF_STRING, 2, L"退出 (Exit)");
                     SetForegroundWindow(hwnd);
                     const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
                                                    pt.x, pt.y, 0, hwnd, nullptr);
                     DestroyMenu(menu);
                     if (cmd == 1) ShowMainWindow(hwnd);
+                    else if (cmd == 3) {
+                        ShowMainWindow(hwnd);
+                        PostMessageW(hwnd, WM_COMMAND, IDC_BIGOPT, 0);
+                    }
                     else if (cmd == 2) {
                         TrayRemove();
                         DestroyWindow(hwnd);
