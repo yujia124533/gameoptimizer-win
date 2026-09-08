@@ -33,6 +33,7 @@ static void PrintUsage() {
         "  gopt_cli rollback                    回滚最近一次优化\n"
         "  gopt_cli rollback-all                回滚全部\n"
         "  gopt_cli list                          显示运行中的支持游戏（优先级/亲和性）\n"
+        "  gopt_cli watch [秒数]                  实时监视 CPU/内存/游戏（Ctrl+C 退出）\n"
         "  gopt_cli prio <pid> <级别>            设置进程优先级 high|above|normal|below|idle\n"
         "  gopt_cli clean                         清理临时文件（24 小时内文件保留）\n"
         "  gopt_cli fingerprint                 显示本机机器指纹（授权绑定用）\n"
@@ -53,6 +54,7 @@ static void PrintUsage() {
         "  gopt_cli rollback                    Rollback the last optimization\n"
         "  gopt_cli rollback-all                Rollback everything\n"
         "  gopt_cli list                         Show running supported games (priority/affinity)\n"
+        "  gopt_cli watch [seconds]              Live monitor CPU/RAM/games (Ctrl+C to exit)\n"
         "  gopt_cli prio <pid> <level>           Set process priority high|above|normal|below|idle\n"
         "  gopt_cli clean                        Clean temp files (files < 24h are kept)\n"
         "  gopt_cli fingerprint                 Show machine fingerprint (for licensing)\n"
@@ -449,6 +451,63 @@ int main(int argc, char** argv) {
         std::printf("%s %lu -> %s: %s\n", T("进程", "Process"), pid, name.c_str(),
                     ok ? T("成功", "OK") : T("失败", "FAILED"));
         return ok ? 0 : 1;
+    }
+
+    if (cmd == "watch") {
+        // 实时监视器：CPU% / 内存 / 运行中的支持游戏（1 秒刷新；Ctrl+C 退出）
+        // 可选参数：秒数（0/缺省 = 持续运行直到 Ctrl+C）
+        AppCore core(cfg);
+        int maxSecs = 0;
+        if (!gameArg.empty()) maxSecs = std::atoi(gameArg.c_str());
+        ULARGE_INTEGER idlePrev{}, kPrev{}, uPrev{};
+        {
+            FILETIME i{}, k{}, u{};
+            if (!GetSystemTimes(&i, &k, &u)) {
+                std::puts(T("监视器初始化失败。", "monitor init failed."));
+                return 1;
+            }
+            idlePrev.HighPart = i.dwHighDateTime; idlePrev.LowPart = i.dwLowDateTime;
+            kPrev.HighPart = k.dwHighDateTime; kPrev.LowPart = k.dwLowDateTime;
+            uPrev.HighPart = u.dwHighDateTime; uPrev.LowPart = u.dwLowDateTime;
+        }
+        std::puts(T("实时监视（Ctrl+C 退出）：", "live monitor (Ctrl+C to exit):"));
+        const ULONGLONG t0 = GetTickCount64();
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            FILETIME i{}, k{}, u{};
+            if (!GetSystemTimes(&i, &k, &u)) break;
+            ULARGE_INTEGER idle{}, kernel{}, user{};
+            idle.HighPart = i.dwHighDateTime; idle.LowPart = i.dwLowDateTime;
+            kernel.HighPart = k.dwHighDateTime; kernel.LowPart = k.dwLowDateTime;
+            user.HighPart = u.dwHighDateTime; user.LowPart = u.dwLowDateTime;
+            const ULONGLONG dI = idle.QuadPart - idlePrev.QuadPart;
+            const ULONGLONG dK = kernel.QuadPart - kPrev.QuadPart;
+            const ULONGLONG dU = user.QuadPart - uPrev.QuadPart;
+            const ULONGLONG total = dK + dU;
+            const int cpuPct = total > 0 ? static_cast<int>((total - dI) * 100 / total) : 0;
+            idlePrev = idle; kPrev = kernel; uPrev = user;
+            MEMORYSTATUSEX ms{};
+            ms.dwLength = sizeof(ms);
+            int ramPct = 0;
+            if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys > 0) {
+                ramPct = static_cast<int>((ms.ullTotalPhys - ms.ullAvailPhys) * 100 / ms.ullTotalPhys);
+            }
+            std::string games;
+            for (const auto& [id, pid] : core.RunningGames())
+                games += gopt::GameIdToString(id) + "(" + std::to_string(pid) + ") ";
+            if (games.empty()) games = T("无", "none");
+            SYSTEMTIME st{};
+            GetLocalTime(&st);
+            std::printf("\r[%02u:%02u:%02u] CPU %3d%%  RAM %u%% (%llu/%llu MB)  %s: %s     ",
+                        st.wHour, st.wMinute, st.wSecond, cpuPct, ramPct,
+                        static_cast<unsigned long long>((ms.ullAvailPhys) / (1024ull * 1024ull)),
+                        static_cast<unsigned long long>((ms.ullTotalPhys) / (1024ull * 1024ull)),
+                        T("游戏", "games"), games.c_str());
+            std::fflush(stdout);
+            if (maxSecs > 0 && (GetTickCount64() - t0) / 1000 >= static_cast<ULONGLONG>(maxSecs)) break;
+        }
+        std::printf("\n");
+        return 0;
     }
 
     if (cmd == "startup") {
