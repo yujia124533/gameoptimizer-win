@@ -39,6 +39,7 @@ static HWND g_lang = nullptr;
 static HWND g_pages[5] = {};
 static HWND g_nav[5] = {};
 static HWND g_bigOpt = nullptr;                        // 总览：一键优化大按钮
+static HWND g_autoStart = nullptr;                     // 总览：开机自启动
 // 游戏优化页
 static HWND g_combo, g_path, g_args, g_power, g_btnSave, g_btnBrowse, g_btnApply, g_btnRollback;
 // 系统调优页
@@ -90,7 +91,7 @@ enum {
     IDC_NAV0 = 201, IDC_NAV1 = 202, IDC_NAV2 = 203, IDC_NAV3 = 204, IDC_NAV4 = 205,
     IDC_BIGOPT = 301,
     IDC_COMBO = 302, IDC_PATH = 303, IDC_BROWSE = 304, IDC_ARGS = 305, IDC_SAVE = 306,
-    IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309,
+    IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309, IDC_AUTOSTART = 310,
     IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403, IDC_CLEAN = 404,
     IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502, IDC_PROC_HIGH = 503, IDC_PROC_NORM = 504,
     IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
@@ -425,6 +426,33 @@ static void ShowMainWindow(HWND hwnd) {
     SetForegroundWindow(hwnd);
 }
 
+// ---------- 开机自启动（注册表 Run 键；稳定 API） ----------
+static bool AutoStartExists() {
+    DWORD cb = 0;
+    const LONG r = RegGetValueW(HKEY_CURRENT_USER,
+                                L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                L"GameOptimizer", RRF_RT_REG_SZ, nullptr, nullptr, &cb);
+    return r == ERROR_SUCCESS;
+}
+
+static void AutoStartSet(bool on) {
+    HKEY k = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER,
+                        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) return;
+    if (on) {
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        const std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
+        RegSetValueExW(k, L"GameOptimizer", 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(cmd.c_str()),
+                       static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteValueW(k, L"GameOptimizer");
+    }
+    RegCloseKey(k);
+}
+
 // ---------- 窗口过程 ----------
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -475,6 +503,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_dashRam = makeCtl(p, L"STATIC", L"", 0, 18, 114, 720, 26, 0);
             g_bigOpt = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 18, 158, 220, 54, IDC_BIGOPT);
             SendMessageW(g_bigOpt, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBig), TRUE);
+            g_autoStart = makeCtl(p, L"BUTTON", L"", BS_AUTOCHECKBOX, 252, 170, 220, 24, IDC_AUTOSTART);
             g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 22, 0);
             // 【页1 游戏优化】
             p = g_pages[1];
@@ -532,6 +561,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             const char* navEn[5] = {"Dashboard", "Game Tune", "System Tune", "Processes", "Startup"};
             for (int i = 0; i < 5; ++i) Label(g_nav[i], navZh[i], navEn[i]);
             Label(g_bigOpt, "一键性能优化", "One-click Boost");
+            Label(g_autoStart, "开机自启动（随系统开机运行）", "Start with Windows");
             Label(g_btnBrowse, "浏览...", "Browse...");
             Label(g_btnApply, "应用优化", "Apply");
             Label(g_btnRollback, "回滚", "Rollback");
@@ -574,6 +604,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             RefreshStartupList();
             ShowPage(0);
             UpdateDashboard();
+            SendMessageW(g_autoStart, BM_SETCHECK, AutoStartExists() ? BST_CHECKED : BST_UNCHECKED, 0);
+            {
+                // 系统调优页显示按硬件的档位推荐
+                wchar_t baseTxt[1024] = {};
+                GetWindowTextW(g_hint2, baseTxt, 1024);
+                const bool hi = gopt::SystemTuner::RecommendHighPerf(g_core->Profile());
+                const std::string rec = std::string("\n") + T("本机推荐：", "Recommended: ")
+                    + (hi ? T("高性能档", "high performance") : T("平衡档", "balanced"));
+                std::wstring w(baseTxt);
+                w += Utf8ToWide(rec);
+                SetWindowTextW(g_hint2, w.c_str());
+            }
             SetTimer(hwnd, IDT_LIVE, 1000, nullptr);
             TrayAdd();
             AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + "  所有功能免费\n");
@@ -810,6 +852,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }).detach();
                 return 0;
             }
+            if (id == IDC_AUTOSTART) {
+                const bool on = SendMessageW(g_autoStart, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                AutoStartSet(on);
+                AddLog(std::string(T("开机自启动：", "Start with Windows: "))
+                       + (on ? T("已开启", "enabled") : T("已关闭", "disabled")) + "\n\n");
+                return 0;
+            }
             if (id == IDC_BROWSE) { BrowsePath(); return 0; }
             if (id == IDC_SAVE) { SaveCurrentGameConfig(); return 0; }
             if (id == IDC_APPLY) {
@@ -1006,6 +1055,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     RegisterClassW(&wc);
 
+    // 单实例：已有实例时激活其窗口（CreateMutexW 稳定 API）
+    HANDLE hMutex = CreateMutexW(nullptr, FALSE, L"GameOptimizer_SingleInstance");
+    if (hMutex != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND prev = FindWindowW(cls, nullptr);
+        if (prev != nullptr) {
+            ShowWindow(prev, SW_RESTORE);
+            SetForegroundWindow(prev);
+        }
+        CloseHandle(hMutex);
+        delete g_core;
+        return 0;
+    }
+
     HWND hwnd = CreateWindowExW(0, cls, L"GameOptimizer" L" v" GOPT_VERSION_STR,
                                 WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                                 1010, 660, nullptr, nullptr, hInst, nullptr);
@@ -1018,6 +1080,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (hMutex != nullptr) CloseHandle(hMutex);
     delete g_core;
     return 0;
 }

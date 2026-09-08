@@ -321,6 +321,20 @@ int main(int argc, char** argv) {
             std::puts(core.RestoreTune().c_str());
             return 0;
         }
+        if (sub == "status" || sub == "show") {
+            // 只读：显示当前电源方案 + 按硬件推荐的档位
+            GUID scheme{};
+            std::string name = "?";
+            if (gopt::HAL::QueryActivePowerScheme(&scheme)) name = gopt::HAL::PowerSchemeName(scheme);
+            const bool hi = gopt::SystemTuner::RecommendHighPerf(core.Profile());
+            std::printf("%s: %s\n%s: %s\n",
+                        T("当前电源方案", "Active power scheme"), name.c_str(),
+                        T("本机推荐（按物理核/内存）", "Recommended (cores/RAM)"),
+                        hi ? T("高性能档", "high performance") : T("平衡档", "balanced"));
+            std::puts(T("提示：tune [high|balanced] 应用；tune restore 恢复。",
+                        "Tip: tune [high|balanced] applies; tune restore reverts."));
+            return 0;
+        }
         bool high = gopt::SystemTuner::RecommendHighPerf(core.Profile());
         if (sub == "high") high = true;
         else if (sub == "balanced" || sub == "balance") high = false;
