@@ -453,6 +453,27 @@ static void AutoStartSet(bool on) {
     RegCloseKey(k);
 }
 
+// ---------- 上次优化时间（savepoints 文件时间戳；稳定文件 API） ----------
+static std::string LastOptimizeTime() {
+    wchar_t base[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) <= 0) {
+        return T("上次优化：未知", "Last optimized: unknown");
+    }
+    const std::wstring p = std::wstring(base) + L"\\GameOptimizer\\savepoints.txt";
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &fa)) {
+        return T("上次优化：从未", "Last optimized: never");
+    }
+    SYSTEMTIME st{};
+    if (!FileTimeToSystemTime(&fa.ftLastWriteTime, &st)) {
+        return T("上次优化：未知", "Last optimized: unknown");
+    }
+    char buf[64] = {};
+    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u",
+                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+    return std::string(T("上次优化：", "Last optimized: ")) + buf;
+}
+
 // ---------- 窗口过程 ----------
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -504,7 +525,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_bigOpt = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 18, 158, 220, 54, IDC_BIGOPT);
             SendMessageW(g_bigOpt, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBig), TRUE);
             g_autoStart = makeCtl(p, L"BUTTON", L"", BS_AUTOCHECKBOX, 252, 170, 220, 24, IDC_AUTOSTART);
-            g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 22, 0);
+            g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 44, 0);
             // 【页1 游戏优化】
             p = g_pages[1];
             g_combo = makeCtl(p, L"COMBOBOX", L"", CBS_DROPDOWNLIST, 18, 16, 200, 200, IDC_COMBO);
@@ -596,8 +617,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 Utf8ToWide(T("怎么用：① 启动游戏（或到「游戏优化」页配置路径后由工具代启动）→ ② 点上面一键 → ③ 随时「回滚」。",
                              "How to use: 1) start a game (or set its exe path in Game Tune)  2) click Boost  3) Rollback anytime.")).c_str());
             SetWindowTextW(g_dashNote,
-                Utf8ToWide(T("所有功能免费 · 无注入、无内核 Hook · 每次优化自动快照可回滚",
-                             "All free · no injection, no kernel hooks · auto snapshot each optimize")).c_str());
+                Utf8ToWide(std::string(T("所有功能免费 · 无注入、无内核 Hook · 每次优化自动快照可回滚",
+                                         "All free · no injection, no kernel hooks · auto snapshot each optimize"))
+                            + "\n" + LastOptimizeTime()).c_str());
             RefreshGameList();
             UpdateGameHint();
             RefreshProcList();

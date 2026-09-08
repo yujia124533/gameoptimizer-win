@@ -42,6 +42,7 @@ static void PrintUsage() {
         "\n游戏: deltaforce | lol | cs2 | pubg | valorant | apex | dota2 | ow\n"
         "\n选项 (apply):\n"
         "  --game-exe <path>   工具代启动游戏（CREATE_SUSPENDED → 设置 → Resume）\n"
+        "  --dry-run           只读预览：显示将应用的优化项（不修改任何设置）\n"
         "  --power             允许切换高性能电源方案（需管理员，默认关闭；功能本身免费）\n"
         "  --lang zh|en        界面语言（默认 zh）\n"
         "\n所有功能免费：电源切换/驱动帧延迟/工作集等全部优化项对所有人开放。\n"
@@ -61,6 +62,7 @@ static void PrintUsage() {
         "\nGames: deltaforce | lol | cs2 | pubg | valorant | apex | dota2 | ow\n"
         "\nOptions (apply):\n"
         "  --game-exe <path>   Tool starts the game (CREATE_SUSPENDED -> settings -> Resume)\n"
+        "  --dry-run           Preview only: show what will be applied (no changes)\n"
         "  --power             Allow high-performance power scheme (admin, off by default; free feature)\n"
         "  --lang zh|en        UI language (default zh)\n"
         "\nAll features are free: power scheme / frame latency / working set are open to everyone.\n"
@@ -165,6 +167,7 @@ int main(int argc, char** argv) {
 
     // 解析公共选项
     std::string gameArg, gameExe;
+    bool dryRun = false;
     AppConfig cfg;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -172,6 +175,8 @@ int main(int argc, char** argv) {
             gameExe = argv[++i];
         } else if (a == "--power") {
             cfg.allowPowerSchemeSwitch = true;
+        } else if (a == "--dry-run") {
+            dryRun = true;
         } else if (a == "--lang" && i + 1 < argc) {
             SetLang(std::string(argv[++i]) == "en" ? Lang::En : Lang::Zh);
         } else if (gameArg.empty() && !a.empty() && a[0] != '-') {
@@ -245,6 +250,32 @@ int main(int argc, char** argv) {
             return 1;
         }
         cfg.gameExeOverride = gameExe;
+        if (dryRun) {
+            // 只读预览：显示解析后的预设与将应用的具体项，不修改任何设置
+            AppCore core(cfg);
+            const gopt::GamePreset p = core.ResolvedPreset(id);
+            std::printf("%s: %s\n", T("目标", "Target"), gopt::GameIdToString(id).c_str());
+            std::puts(T("将应用（只读预览，未执行任何修改）：", "Will apply (preview only, nothing modified):"));
+            std::printf("  %s\n", p.description.c_str());
+            if (p.processPriorityClass)
+                std::printf("  %s: %s\n", T("进程优先级", "Priority"),
+                            p.processPriorityClass == HIGH_PRIORITY_CLASS ? T("高 (HIGH)", "High")
+                                                                          : T("高于正常 (ABOVE_NORMAL)", "AboveNormal"));
+            if (p.cpuAffinityMask)
+                std::printf("  %s: 0x%llx（%s %d %s）\n", T("CPU 亲和性", "CPU affinity"),
+                            static_cast<unsigned long long>(p.cpuAffinityMask),
+                            T("保留", "keep"), p.leaveCoresForSystem, T("核给系统", "cores for system"));
+            if (p.workingSetMinMB > 0)
+                std::printf("  %s: %llu MB\n", T("工作集下限", "Working set min"),
+                            static_cast<unsigned long long>(p.workingSetMinMB));
+            if (p.gpuMaxFrames > 0)
+                std::printf("  %s: %u\n", T("驱动级帧延迟", "Driver frame latency"), p.gpuMaxFrames);
+            if (cfg.allowPowerSchemeSwitch && p.switchHighPerformancePower)
+                std::printf("  %s: %s\n", T("电源方案", "Power scheme"), T("高性能", "High performance"));
+            std::printf("  %s: %s\n", T("快照/看门狗", "Snapshot/watchdog"),
+                        T("自动启用（可随时回滚）", "auto enabled (rollable anytime)"));
+            return 0;
+        }
         AppCore core(cfg);
         std::puts(core.OptimizeForGame(id).c_str());
 

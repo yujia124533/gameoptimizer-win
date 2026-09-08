@@ -1,4 +1,4 @@
-GameOptimizer 使用说明 (v1.0.10)
+GameOptimizer 使用说明 (v1.0.11)
 ======================================
 
 用途：Windows 端 8 款热门游戏（三角洲行动/英雄联盟/CS2/绝地求生/无畏契约/
@@ -29,6 +29,7 @@ Apex Legends/Dota 2/守望先锋2）一键优化工具（硬件无感适配）�
 【2】命令行
       gopt_cli --version / status / fingerprint
       gopt_cli apply cs2                       游戏运行中 attach
+      gopt_cli apply cs2 --dry-run             只读预览将应用的优化项（不修改）
       gopt_cli apply cs2 --game-exe "<路径>"    代启动
       gopt_cli optimize [游戏|system]          一键：优化全部运行中的支持游戏
       gopt_cli rollback / rollback-all         回滚（跨进程）
