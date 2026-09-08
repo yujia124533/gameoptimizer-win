@@ -85,6 +85,11 @@ static bool g_trayAdded = false;
 static bool g_trayBalloonShown = false;
 // 进程页每进程 CPU%（GetProcessTimes 稳定 API；pid -> (累计CPU tick, 采样时刻ms)）
 static std::map<uint32_t, std::pair<ULONGLONG, ULONGLONG>> g_procCpuPrev;
+// 总览页 CPU/内存 48 秒历史曲线（纯 GDI；每秒采样）
+static float g_cpuHist[48] = {};
+static float g_ramHist[48] = {};
+static int g_histPos = 0, g_histCount = 0;
+static HWND g_spark = nullptr;
 
 enum {
     IDT_LIVE = 101,
@@ -99,6 +104,7 @@ enum {
     IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
     IDC_STARTUP_ENABLE = 604, IDC_STARTUP_RESTORE = 605,
     ID_FLOWPANEL = 700,
+    IDC_SPARK = 701,
 };
 
 #define WM_APP_UIEVENT (WM_APP + 1)
@@ -307,6 +313,13 @@ static void RefreshCpuLoad() {
             const int ramPct = static_cast<int>((ms.ullTotalPhys - ms.ullAvailPhys) * 100 / ms.ullTotalPhys);
             SetWindowTextW(g_dashRam, Utf8ToWide(g_ramBase + "  [" + std::string(T("当前占用", "used"))
                                                  + ": " + std::to_string(ramPct) + "%]").c_str());
+            // 历史曲线采样
+            const int cpuPct = pct.empty() || pct == "--%" ? 0 : std::atoi(pct.c_str());
+            g_cpuHist[g_histPos] = static_cast<float>(cpuPct);
+            g_ramHist[g_histPos] = static_cast<float>(ramPct);
+            g_histPos = (g_histPos + 1) % 48;
+            if (g_histCount < 48) ++g_histCount;
+            if (g_spark != nullptr) InvalidateRect(g_spark, nullptr, FALSE);
         }
     }
 }
@@ -417,6 +430,7 @@ static void ShowPage(int page) {
     g_page = page;
     for (int i = 0; i < 5; ++i)
         if (g_pages[i] != nullptr) ShowWindow(g_pages[i], i == page ? SW_SHOW : SW_HIDE);
+    if (g_spark != nullptr) ShowWindow(g_spark, page == 0 ? SW_SHOW : SW_HIDE);
     if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 
@@ -558,6 +572,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SendMessageW(g_bigOpt, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBig), TRUE);
             g_autoStart = makeCtl(p, L"BUTTON", L"", BS_AUTOCHECKBOX, 252, 170, 220, 24, IDC_AUTOSTART);
             g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 44, 0);
+            // CPU/内存曲线：必须是主窗口子控件（SS_OWNERDRAW 的 WM_DRAWITEM 会发给父窗口）
+            // 位置对齐总览页内容区 (222,62) + (18,278)；由 ShowPage 联动显隐
+            g_spark = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_OWNERDRAW,
+                                      240, 340, 720, 48, hwnd,
+                                      reinterpret_cast<HMENU>(IDC_SPARK), hInst, nullptr);
+            ShowWindow(g_spark, SW_HIDE);
             // 【页1 游戏优化】
             p = g_pages[1];
             g_combo = makeCtl(p, L"COMBOBOX", L"", CBS_DROPDOWNLIST, 18, 16, 200, 200, IDC_COMBO);
@@ -819,6 +839,42 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     + " · " + (g_flowHasFail ? T("存在失败项（可随时回滚）", "has failures (rollback anytime)")
                                              : T("自动快照已就绪，可随时回滚", "auto snapshot ready, rollback anytime"));
                 DrawTextW(dc, Utf8ToWide(sum).c_str(), -1, &info, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                return TRUE;
+            }
+            // 总览：CPU/内存 48 秒实时曲线（纯 GDI）
+            if (dis != nullptr && dis->CtlID == IDC_SPARK) {
+                HDC dc = dis->hDC;
+                RECT r = dis->rcItem;
+                HBRUSH bg = CreateSolidBrush(RGB(11, 18, 32));
+                FillRect(dc, &r, bg);
+                DeleteObject(bg);
+                HBRUSH nb = CreateSolidBrush(RGB(0, 229, 255));
+                FrameRect(dc, &r, nb);
+                DeleteObject(nb);
+                SetBkMode(dc, TRANSPARENT);
+                // 图例
+                SetTextColor(dc, RGB(34, 211, 238));
+                SelectObject(dc, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT));
+                RECT lg{r.left + 10, r.top + 3, r.right - 10, r.top + 20};
+                DrawTextW(dc, Utf8ToWide(std::string(T("CPU / 内存 实时（48 秒）  ", "CPU / RAM live (48s)  "))
+                                          + T("CPU=青色  内存=绿色", "CPU=cyan  RAM=green")).c_str(),
+                          -1, &lg, DT_LEFT | DT_TOP | DT_SINGLELINE);
+                const int top = r.top + 22, bottom = r.bottom - 6, left = r.left + 10, right = r.right - 10;
+                for (int pass = 0; pass < 2; ++pass) {
+                    const float* hist = pass == 0 ? g_cpuHist : g_ramHist;
+                    HPEN pen = CreatePen(PS_SOLID, 1, pass == 0 ? RGB(0, 229, 255) : RGB(74, 222, 128));
+                    HPEN op = (HPEN)SelectObject(dc, pen);
+                    int ox = 0, oy = 0;
+                    for (int i = 0; i < g_histCount; ++i) {
+                        const float v = hist[i] < 0 ? 0 : (hist[i] > 100 ? 100 : hist[i]);
+                        const int x = left + i * (right - left) / 47;
+                        const int y = bottom - static_cast<int>(v * (bottom - top) / 100.0f);
+                        if (i == 0) { ox = x; oy = y; MoveToEx(dc, x, y, nullptr); }
+                        else { LineTo(dc, x, y); }
+                    }
+                    SelectObject(dc, op);
+                    DeleteObject(pen);
+                }
                 return TRUE;
             }
             break;

@@ -25,6 +25,10 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
 
+## 🎉 v1.0.17 更新日志
+
+- **CPU/内存实时曲线**：总览页新增 48 秒实时迷你图（深色面板，CPU 青色 / 内存绿色双曲线，纯 GDI 绘制、每秒采样）——优化前后趋势一目了然
+
 ## 🎉 v1.0.16 更新日志
 
 - **进程内存占用**：进程页列表显示每个游戏进程的当前内存占用（`GetProcessMemoryInfo`，psapi 稳定 API），与优先级/CPU% 同屏
