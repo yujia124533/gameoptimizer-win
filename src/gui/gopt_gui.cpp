@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <psapi.h>
 
 #include <cstdio>
 #include <map>
@@ -324,6 +325,7 @@ static void RefreshProcList() {
         for (const auto& [id, pid] : g_procs) {
             DWORD pri = 0;
             ULONGLONG cpuTicks = 0;
+            DWORD memMB = 0;
             HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
             if (h != nullptr) {
                 pri = GetPriorityClass(h);
@@ -333,6 +335,11 @@ static void RefreshProcList() {
                     kk.HighPart = k.dwHighDateTime; kk.LowPart = k.dwLowDateTime;
                     uu.HighPart = u.dwHighDateTime; uu.LowPart = u.dwLowDateTime;
                     cpuTicks = kk.QuadPart + uu.QuadPart;
+                }
+                PROCESS_MEMORY_COUNTERS pmc{};
+                pmc.cb = sizeof(pmc);
+                if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) {
+                    memMB = static_cast<DWORD>(pmc.WorkingSetSize / (1024ull * 1024ull));
                 }
                 CloseHandle(h);
             }
@@ -353,10 +360,13 @@ static void RefreshProcList() {
                 }
             }
             g_procCpuPrev[pid] = {cpuTicks, nowMs};
+            char memBuf[24] = {};
+            if (memMB > 0)
+                std::snprintf(memBuf, sizeof(memBuf), "  [%s: %u MB]", T("内存", "RAM"), memMB);
             SendMessageW(g_listProc, LB_ADDSTRING, 0,
                          reinterpret_cast<LPARAM>(Utf8ToWide(
                              gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")  ["
-                             + T("优先级", "Prio") + ": " + priName + "]" + cpuBuf).c_str()));
+                             + T("优先级", "Prio") + ": " + priName + "]" + cpuBuf + memBuf).c_str()));
         }
         // 清理已退出的进程采样缓存
         for (auto it = g_procCpuPrev.begin(); it != g_procCpuPrev.end();) {

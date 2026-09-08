@@ -48,4 +48,4 @@ add_executable(gopt_gui WIN32
     src/gui/gopt_gui.cpp
     resources/gui_resource.rc
 )
-target_link_libraries(gopt_gui PRIVATE gameopt_core user32 gdi32 comdlg32 shell32)
+target_link_libraries(gopt_gui PRIVATE gameopt_core user32 gdi32 comdlg32 shell32 psapi)

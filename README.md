@@ -25,6 +25,11 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
 
+## 🎉 v1.0.16 更新日志
+
+- **进程内存占用**：进程页列表显示每个游戏进程的当前内存占用（`GetProcessMemoryInfo`，psapi 稳定 API），与优先级/CPU% 同屏
+- **README CLI 命令表刷新**：补齐 `watch / optimize / tune / startup / prio / --dry-run / clean / license` 等全部命令与说明
+
 ## 🎉 v1.0.15 更新日志
 
 - **贡献指南**：新增 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)——红线、构建、添加游戏预设三步、自测、发布流程与提交规范
@@ -116,14 +121,18 @@ Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.c
 gopt_gui.exe
 
 :: CLI
-gopt_cli status                        查看硬件/预设/授权
-gopt_cli apply cs2                     优化 cs2（游戏运行中 attach）
+gopt_cli status                        硬件/预设/提权/授权状态
+gopt_cli watch [秒数]                  实时监视 CPU/内存/运行中游戏（Ctrl+C 退出）
+gopt_cli apply cs2                     优化 cs2（游戏运行中 attach；--dry-run 只读预览）
 gopt_cli apply cs2 --game-exe "<路径>"  代启动游戏
-gopt_cli rollback / rollback-all       回滚
+gopt_cli optimize [游戏|system]        一键：优化全部运行中的支持游戏（--dry-run 预览）
+gopt_cli rollback / rollback-all       回滚（跨进程，秒级）
+gopt_cli tune [high|balanced]          系统调优；tune status 只读查看；tune restore 恢复
+gopt_cli startup list|disable|enable|restore   开机启动项管理
+gopt_cli prio <pid> high|above|normal|below|idle  进程优先级（上限 HIGH）
 gopt_cli list                          运行中的游戏概览（优先级/亲和性）
-gopt_cli clean                         清理临时文件（%TEMP%，锁定项跳过）
-gopt_cli fingerprint                   本机机器指纹（授权绑定）
-gopt_cli license status / activate <码> 授权
+gopt_cli clean                         清理临时文件（%TEMP%，24h 内保留）
+gopt_cli fingerprint / license status  机器指纹 / 授权（所有功能免费，授权可选）
 gopt_cli --version                     版本
 ```
 
