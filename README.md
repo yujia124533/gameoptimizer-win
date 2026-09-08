@@ -25,6 +25,12 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
 
+## 🎉 v1.0.15 更新日志
+
+- **贡献指南**：新增 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)——红线、构建、添加游戏预设三步、自测、发布流程与提交规范
+- **版本一致性检查**：`tools/check_version.ps1` 校验 version.h / 双 RC / README 更新日志版本一致（发布前必跑）
+- **启动配置摘要**：游戏优化页提示区显示已保存的代启动配置（exe 路径/参数/电源开关；未设置时明确提示）
+
 ## 🎉 v1.0.14 更新日志
 
 - **RAM 实时化**：总览页内存卡片每秒刷新「当前占用 X%」（GlobalMemoryStatusEx 稳定 API，与 CPU 负载同步）
@@ -171,4 +177,5 @@ docs/         商业化方案（含合规风险）
 ## 开源协作
 
 欢迎 PR：新游戏预设（`src\preset\GameOptimizationPreset.cpp` 加一行）、UI 增强、更多硬件适配。
+完整贡献指南（构建/加游戏/自测/发布流程）见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)。
 商业变现路线见 [docs/COMMERCIALIZATION.md](docs/COMMERCIALIZATION.md)。

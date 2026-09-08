@@ -267,6 +267,15 @@ static void UpdateGameHint() {
     std::string txt = std::string(T("玩法：路径留空 → 优化正在运行的游戏；填写该游戏 exe 路径并「保存游戏设置」→「应用优化」会先代启动并自动优化。\n",
                                     "Tip: leave path empty to optimize a running game; set the exe path + Save, then Apply will launch and optimize it.\n"))
         + std::string(T("当前游戏: ", "Selected: ")) + gopt::GameIdToString(sel) + " — " + p.description;
+    // 已保存的启动配置摘要（GameConfig 持久化）
+    const GameLaunchConfig gc = GameConfig::Get(sel);
+    if (gc.exePath.empty()) {
+        txt += std::string("\n") + T("启动配置：未设置（默认优化运行中的游戏）", "Launch config: unset (optimize running game by default)");
+    } else {
+        txt += std::string("\n") + T("启动配置：", "Launch config: ") + gc.exePath
+             + (gc.args.empty() ? "" : (" " + gc.args))
+             + (gc.powerScheme ? T("  [电源:开]", "  [power:on]") : "");
+    }
     SetWindowTextW(g_hint1, Utf8ToWide(txt).c_str());
 }
 
@@ -550,7 +559,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_btnRollback = makeCtl(p, L"BUTTON", L"", 0, 128, 170, 100, 30, IDC_ROLLBACK);
             g_btnSave = makeCtl(p, L"BUTTON", L"", 0, 238, 170, 100, 30, IDC_SAVE);
             SendMessageW(g_btnApply, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
-            g_hint1 = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 60, 0);
+            g_hint1 = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 90, 0);
             // 【页2 系统调优】
             p = g_pages[2];
             g_btnTuneHigh = makeCtl(p, L"BUTTON", L"", 0, 18, 30, 200, 40, IDC_TUNE_HIGH);
