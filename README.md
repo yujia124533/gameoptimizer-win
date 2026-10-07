@@ -25,6 +25,14 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
 
+## 🎉 v1.0.19 更新日志
+
+- **修复（重要）：页内控件点击此前完全无效**——页容器是 `STATIC`，它不转发子控件的 `WM_COMMAND`，导致「一键优化 / 应用优化 / 系统调优三键 / 清理临时文件 / 进程提升 / 启动项」等页内按钮的点击通知根本到不了主窗口（这正是"点了没反应"的根因）。现已通过页容器子类化（保存原过程 + `CallWindowProcW` 链式调用）把 `WM_COMMAND` 转发给主窗口，所有页内按钮与列表交互恢复可用
+- **`gopt_cli watch --top [N]`**：进程热点榜——每秒按 CPU% 降序列出运行中支持游戏的 pid / CPU% / 内存 MB / 优先级（首次采样显示 `--`；`--top` 可与秒数共存）
+- **进程页排序 + 双击提升**：列表按 CPU% 降序（选中项按 pid 保持，不再选错行）；双击某行等价于「提升优先级」
+- **文档**：新增 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（模块地图 / 数据流 / 红线落点表 / 扩展清单）；[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) 增加「发布检查清单」10 步
+- **CI 加严**：构建后新增产物校验步骤（`gopt_cli`/`gopt_gui`/安装包/便携包均存在且非空，且 `gopt_cli --version` 与 `src/version.h` 一致）
+
 ## 🎉 v1.0.18 更新日志
 
 - **诊断报告**：`gopt_cli report [--out <文件路径>]`——一条命令导出全部状态（版本 / 硬件 / 提权 / 当前电源方案 / 运行中游戏 / 上次优化时间 / 8 款预设概览 / 安全边界），支持 UTF-8 无 BOM 导出，字段按显示宽度对齐（中英文均可直接复制粘贴）

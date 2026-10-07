@@ -52,6 +52,72 @@ build\gopt_cli.exe clean               :: 临时清理（24h 内文件保留）
 - README 顶部更新日志追加条目（`## 🎉 vX.Y.Z 更新日志`）。
 - 打标签 `vX.Y.Z` 推送后 GitHub Actions 自动构建并发布 Release（无需手动上传）。
 
+## 发布检查清单 (Release Checklist)
+
+按顺序执行，任一步失败即停止并修复（步骤 2–5 与 CI 的前几步一致）：
+
+1. **同步版本号三处 + 更新日志**：`src/version.h` 的 `GOPT_VERSION_STR`、`resources/resource.rc`、`resources/gui_resource.rc`（`FILEVERSION` 与 `FileVersion`/`ProductVersion` 字符串）；README 顶部追加 `## 🎉 vX.Y.Z 更新日志`。
+
+2. **版本一致性门禁**：
+
+   ```bat
+   powershell -NoProfile -ExecutionPolicy Bypass -File tools\check_version.ps1
+   :: 期望输出 RESULT: PASS (all version markers = vX.Y.Z)，退出码 0
+   ```
+
+3. **构建全部产物**（MSYS2 MinGW64 / w64devkit 环境，产出 CLI + GUI + 自检 + 安装包 + 便携包）：
+
+   ```bat
+   bash tools/build_release.sh
+   :: 期望：build\gopt_cli.exe  build\gopt_gui.exe  build\gopt_verify.exe  build\GameOptimizer-setup.exe
+   ::       release\GameOptimizer-setup.exe  release\GameOptimizer-portable.zip
+   ```
+
+4. **机制自检（真实进程 优先级/亲和性 应用 + 恢复）**：
+
+   ```bat
+   build\gopt_verify.exe
+   :: 期望 RESULT: PASS
+   :: 可选：跨进程两段验证（快照落盘后由新进程回滚）
+   build\gopt_verify.exe save
+   build\gopt_verify.exe rollback <上一步输出的 pid>
+   ```
+
+5. **CLI 冒烟**：
+
+   ```bat
+   build\gopt_cli.exe --version   :: 期望 GameOptimizer vX.Y.Z
+   build\gopt_cli.exe report      :: 诊断报告（可加 --out release\report.txt）
+   build\gopt_cli.exe status      :: 硬件 / 预设 / 提权状态
+   ```
+
+6. **确认便携包内容**：`release\GameOptimizer-portable.zip` 内应含 `gopt_cli.exe`、`gopt_gui.exe`、`gopt_verify.exe`、`BEFORE_USE_README.txt`、`自检.cmd`（由 `tools\build_release.sh` 自动打包）。
+
+7. **提交并推送**：
+
+   ```bat
+   git add -A
+   git commit -m "release: vX.Y.Z ..."
+   git push origin main
+   ```
+
+8. **打 tag 并推送**（tag 推送即触发 CI 构建与发布）：
+
+   ```bat
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+9. **在 GitHub Release 页确认两个资产**：`GameOptimizer-setup.exe`、`GameOptimizer-portable.zip`。
+   CI 步骤顺序：版本一致性校验 → 构建（MSYS2）→ **产物存在性 + 版本校验** → 上传 artifact → 创建 Release。
+
+10. **失败处理**：若门禁或产物校验失败，修正后删除远端 tag 重打：
+
+    ```bat
+    git tag -d vX.Y.Z
+    git push origin :refs/tags/vX.Y.Z
+    ```
+
 ## 提交规范
 
 - 每个提交聚焦一个改动；描述说明"为什么安全/可回滚"。

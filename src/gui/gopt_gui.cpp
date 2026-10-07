@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <psapi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -38,6 +39,7 @@ static AppCore* g_core = nullptr;
 static HWND g_hwnd = nullptr, g_footer = nullptr, g_log = nullptr;
 static HWND g_lang = nullptr;
 static HWND g_pages[5] = {};
+static WNDPROC g_pageProcOld[5] = {};                  // 页容器(STATIC)原过程：转发 WM_COMMAND 后链式调用
 static HWND g_nav[5] = {};
 static HWND g_bigOpt = nullptr;                        // 总览：一键优化大按钮
 static HWND g_autoStart = nullptr;                     // 总览：开机自启动
@@ -327,75 +329,129 @@ static void RefreshCpuLoad() {
 }
 
 static void RefreshProcList() {
+    // 选中项按 pid 记录：列表显示的是上一轮顺序，且本轮会按 CPU% 重排（索引会变），
+    // 因此必须在重新枚举前读取选中行，并只能用 pid 做恢复映射。
+    const int selBefore = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
+    uint32_t pidBefore = 0;
+    if (selBefore >= 0 && selBefore < static_cast<int>(g_procs.size())) pidBefore = g_procs[selBefore].second;
+
     g_procs = g_core->RunningGames();
     const ULONGLONG nowMs = GetTickCount64();
     int cores = g_core->Profile().logicalCores;
     if (cores < 1) cores = 1;
-    const int selBefore = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
+
+    // 先采集每进程指标与显示文本，再按 CPU% 降序排序（stable：无采样/相同负载保持原枚举顺序）
+    struct ProcRow {
+        GameId id = GameId::DeltaForce;
+        uint32_t pid = 0;
+        double cpuPct = 0.0;   // 无采样数据时为 0，仅参与排序
+        std::string text;
+    };
+    std::vector<ProcRow> rows;
+    for (const auto& [id, pid] : g_procs) {
+        DWORD pri = 0;
+        ULONGLONG cpuTicks = 0;
+        DWORD memMB = 0;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (h != nullptr) {
+            pri = GetPriorityClass(h);
+            FILETIME c{}, e{}, k{}, u{};
+            if (GetProcessTimes(h, &c, &e, &k, &u)) {
+                ULARGE_INTEGER kk{}, uu{};
+                kk.HighPart = k.dwHighDateTime; kk.LowPart = k.dwLowDateTime;
+                uu.HighPart = u.dwHighDateTime; uu.LowPart = u.dwLowDateTime;
+                cpuTicks = kk.QuadPart + uu.QuadPart;
+            }
+            PROCESS_MEMORY_COUNTERS pmc{};
+            pmc.cb = sizeof(pmc);
+            if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) {
+                memMB = static_cast<DWORD>(pmc.WorkingSetSize / (1024ull * 1024ull));
+            }
+            CloseHandle(h);
+        }
+        const char* priName = pri == HIGH_PRIORITY_CLASS ? T("高", "High")
+                           : pri == ABOVE_NORMAL_PRIORITY_CLASS ? T("高于正常", "AboveNormal")
+                           : pri == BELOW_NORMAL_PRIORITY_CLASS ? T("低于正常", "BelowNormal")
+                           : pri == IDLE_PRIORITY_CLASS ? T("空闲", "Idle")
+                           : T("正常", "Normal");
+        // 用 GetProcessTimes 差值计算每进程 CPU%（相对上次采样；稳定官方 API）
+        double cpuPct = 0.0;
+        char cpuBuf[24] = {};
+        auto it = g_procCpuPrev.find(pid);
+        if (it != g_procCpuPrev.end()) {
+            const ULONGLONG dTicks = cpuTicks - it->second.first;
+            const ULONGLONG dMs = nowMs - it->second.second;
+            if (dMs > 50) {
+                cpuPct = 100.0 * static_cast<double>(dTicks) / (static_cast<double>(dMs) * 10000.0 * cores);
+                std::snprintf(cpuBuf, sizeof(cpuBuf), "  [CPU: %.1f%%]", cpuPct);
+            }
+        }
+        g_procCpuPrev[pid] = {cpuTicks, nowMs};
+        char memBuf[24] = {};
+        if (memMB > 0)
+            std::snprintf(memBuf, sizeof(memBuf), "  [%s: %u MB]", T("内存", "RAM"), memMB);
+        ProcRow row;
+        row.id = id;
+        row.pid = pid;
+        row.cpuPct = cpuPct;
+        row.text = gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")  ["
+                 + T("优先级", "Prio") + ": " + priName + "]" + cpuBuf + memBuf;
+        rows.push_back(row);
+    }
+    // 清理已退出的进程采样缓存
+    for (auto it = g_procCpuPrev.begin(); it != g_procCpuPrev.end();) {
+        bool alive = false;
+        for (const auto& p : g_procs) if (p.second == it->first) { alive = true; break; }
+        if (!alive) it = g_procCpuPrev.erase(it);
+        else ++it;
+    }
+    // 按 CPU% 降序排序（std::stable_sort 保证相同值/无采样时维持游戏枚举顺序）
+    std::stable_sort(rows.begin(), rows.end(),
+                     [](const ProcRow& a, const ProcRow& b) { return a.cpuPct > b.cpuPct; });
+    // g_procs 与列表行顺序保持一致（按钮与双击都按列表索引取 pid）
+    g_procs.clear();
+    for (const ProcRow& r : rows) g_procs.emplace_back(r.id, r.pid);
+
     SendMessageW(g_listProc, LB_RESETCONTENT, 0, 0);
-    if (g_procs.empty()) {
+    if (rows.empty()) {
         SendMessageW(g_listProc, LB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(Utf8ToWide(T("（没有运行中的支持游戏）", "(no supported games running)")).c_str()));
     } else {
-        for (const auto& [id, pid] : g_procs) {
-            DWORD pri = 0;
-            ULONGLONG cpuTicks = 0;
-            DWORD memMB = 0;
-            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            if (h != nullptr) {
-                pri = GetPriorityClass(h);
-                FILETIME c{}, e{}, k{}, u{};
-                if (GetProcessTimes(h, &c, &e, &k, &u)) {
-                    ULARGE_INTEGER kk{}, uu{};
-                    kk.HighPart = k.dwHighDateTime; kk.LowPart = k.dwLowDateTime;
-                    uu.HighPart = u.dwHighDateTime; uu.LowPart = u.dwLowDateTime;
-                    cpuTicks = kk.QuadPart + uu.QuadPart;
-                }
-                PROCESS_MEMORY_COUNTERS pmc{};
-                pmc.cb = sizeof(pmc);
-                if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) {
-                    memMB = static_cast<DWORD>(pmc.WorkingSetSize / (1024ull * 1024ull));
-                }
-                CloseHandle(h);
-            }
-            const char* priName = pri == HIGH_PRIORITY_CLASS ? T("高", "High")
-                               : pri == ABOVE_NORMAL_PRIORITY_CLASS ? T("高于正常", "AboveNormal")
-                               : pri == BELOW_NORMAL_PRIORITY_CLASS ? T("低于正常", "BelowNormal")
-                               : pri == IDLE_PRIORITY_CLASS ? T("空闲", "Idle")
-                               : T("正常", "Normal");
-            // 用 GetProcessTimes 差值计算每进程 CPU%（相对上次采样；稳定官方 API）
-            char cpuBuf[24] = {};
-            auto it = g_procCpuPrev.find(pid);
-            if (it != g_procCpuPrev.end()) {
-                const ULONGLONG dTicks = cpuTicks - it->second.first;
-                const ULONGLONG dMs = nowMs - it->second.second;
-                if (dMs > 50) {
-                    const double pct = 100.0 * static_cast<double>(dTicks) / (static_cast<double>(dMs) * 10000.0 * cores);
-                    std::snprintf(cpuBuf, sizeof(cpuBuf), "  [CPU: %.1f%%]", pct);
-                }
-            }
-            g_procCpuPrev[pid] = {cpuTicks, nowMs};
-            char memBuf[24] = {};
-            if (memMB > 0)
-                std::snprintf(memBuf, sizeof(memBuf), "  [%s: %u MB]", T("内存", "RAM"), memMB);
+        for (const ProcRow& r : rows)
             SendMessageW(g_listProc, LB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(Utf8ToWide(
-                             gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")  ["
-                             + T("优先级", "Prio") + ": " + priName + "]" + cpuBuf + memBuf).c_str()));
+                         reinterpret_cast<LPARAM>(Utf8ToWide(r.text).c_str()));
+        // 按 pid 恢复选中；原 pid 已退出时回退到第一行（保持原有“总有一行被选中”的行为）
+        int restore = 0;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            if (rows[i].pid == pidBefore) { restore = static_cast<int>(i); break; }
         }
-        // 清理已退出的进程采样缓存
-        for (auto it = g_procCpuPrev.begin(); it != g_procCpuPrev.end();) {
-            bool alive = false;
-            for (const auto& p : g_procs) if (p.second == it->first) { alive = true; break; }
-            if (!alive) it = g_procCpuPrev.erase(it);
-            else ++it;
-        }
-    }
-    if (!g_procs.empty()) {
-        const int n = static_cast<int>(g_procs.size());
-        SendMessageW(g_listProc, LB_SETCURSEL, 0, selBefore >= 0 && selBefore < n ? selBefore : 0);
+        SendMessageW(g_listProc, LB_SETCURSEL, restore, 0);
     }
     UpdateFooter();
+}
+
+// 进程页：修改选中进程优先级（按钮与列表双击共用；官方 API，上限 HIGH，不使用 REALTIME）
+static void ApplyProcPriority(bool high) {
+    const int sel = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(g_procs.size()) || g_procs.empty()) {
+        AddLog(std::string(T("请先在列表中选择一个游戏进程。\n\n",
+                             "Select a game process first.\n\n")));
+        return;
+    }
+    const uint32_t pid = g_procs[sel].second;
+    const DWORD cls = high ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS;
+    HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (h == nullptr) {
+        AddLog(std::string(T("无法打开进程（可能已退出或无权限）。\n\n",
+                             "Cannot open process (exited or no access).\n\n")));
+        return;
+    }
+    const bool ok = gopt::HAL::SetProcessPriority(h, cls);
+    CloseHandle(h);
+    AddLog(std::string(T("进程 ", "Process ")) + std::to_string(pid) + " -> "
+           + (high ? T("高优先级", "High priority") : T("正常优先级", "Normal priority"))
+           + ": " + (ok ? "OK" : "FAIL") + "\n\n");
+    RefreshProcList();
 }
 
 static void RefreshStartupList() {
@@ -553,6 +609,19 @@ static void ShowDiagnosticsDialog() {
                 MB_OK | MB_ICONINFORMATION);
 }
 
+// ---------- 页容器消息转发 ----------
+// 页容器是 STATIC：它不会把子控件的 WM_COMMAND 转发给主窗口，导致页内所有按钮/列表通知
+// （BN_CLICKED / LBN_DBLCLK 等）丢失。这里子类化页容器，仅转发 WM_COMMAND，其余消息
+// 链回原 STATIC 过程（保留原生背景绘制），避免视觉回归。
+static LRESULT CALLBACK PageProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_COMMAND) return SendMessageW(GetParent(h), m, w, l);
+    int idx = -1;
+    for (int i = 0; i < 5; ++i) if (g_pages[i] == h) { idx = i; break; }
+    if (idx >= 0 && g_pageProcOld[idx] != nullptr)
+        return CallWindowProcW(g_pageProcOld[idx], h, m, w, l);
+    return DefWindowProcW(h, m, w, l);
+}
+
 // ---------- 窗口过程 ----------
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -594,6 +663,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (int i = 0; i < 5; ++i)
                 g_pages[i] = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS,
                                              222, 62, 770, 320, hwnd, nullptr, hInst, nullptr);
+            // 子类化页容器：转发子控件的 WM_COMMAND 到主窗口（STATIC 自身不转发，否则页内按钮全失效）
+            for (int i = 0; i < 5; ++i) {
+                if (g_pages[i] == nullptr) continue;
+                g_pageProcOld[i] = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+                    g_pages[i], GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PageProc)));
+            }
 
             // 【页0 总览】使用引导 + 硬件信息卡 + 一键大按钮
             HWND p = g_pages[0];
@@ -985,6 +1060,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 UpdateGameHint();
                 return 0;
             }
+            // 进程列表双击 = 提升优先级（与「提升优先级」按钮共用 ApplyProcPriority，逻辑不分叉）
+            if (id == IDC_PROCLIST && code == LBN_DBLCLK) {
+                ApplyProcPriority(true);
+                return 0;
+            }
             if (code != BN_CLICKED) return 0;
             if (id >= IDC_NAV0 && id <= IDC_NAV4) {
                 ShowPage(id - IDC_NAV0);
@@ -1055,27 +1135,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (id == IDC_PROC_REFRESH) { RefreshProcList(); return 0; }
             if (id == IDC_PROC_HIGH || id == IDC_PROC_NORM) {
-                const int sel = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
-                if (sel < 0 || sel >= static_cast<int>(g_procs.size()) || g_procs.empty()) {
-                    AddLog(std::string(T("请先在列表中选择一个游戏进程。\n\n",
-                                         "Select a game process first.\n\n")));
-                    return 0;
-                }
-                const uint32_t pid = g_procs[sel].second;
-                const DWORD cls = (id == IDC_PROC_HIGH) ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS;
-                HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                if (h == nullptr) {
-                    AddLog(std::string(T("无法打开进程（可能已退出或无权限）。\n\n",
-                                         "Cannot open process (exited or no access).\n\n")));
-                    return 0;
-                }
-                const bool ok = gopt::HAL::SetProcessPriority(h, cls);
-                CloseHandle(h);
-                AddLog(std::string(T("进程 ", "Process ")) + std::to_string(pid) + " -> "
-                       + (id == IDC_PROC_HIGH ? T("高优先级", "High priority")
-                                             : T("正常优先级", "Normal priority"))
-                       + ": " + (ok ? "OK" : "FAIL") + "\n\n");
-                RefreshProcList();
+                ApplyProcPriority(id == IDC_PROC_HIGH);
                 return 0;
             }
             if (id == IDC_STARTUP_REFRESH) { RefreshStartupList(); return 0; }

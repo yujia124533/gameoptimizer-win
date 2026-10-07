@@ -1,10 +1,12 @@
 // GameOptimizer 命令行入口（第 5 步：AppCore 协调层 + CLI，发布版）
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "config/GameConfig.h"
 #include "core/AppCore.h"
@@ -14,6 +16,12 @@
 #include "tuning/StartupManager.h"
 #include "tuning/SystemTuner.h"
 #include "version.h"
+
+// K32GetProcessMemoryInfo 由 kernel32 导出（Win7+）：只取结构体，不链接 psapi，也不改构建脚本
+#ifndef PSAPI_VERSION
+#define PSAPI_VERSION 2
+#endif
+#include <psapi.h>
 
 using gopt::AppConfig;
 using gopt::AppCore;
@@ -35,7 +43,7 @@ static void PrintUsage() {
         "  gopt_cli rollback                    回滚最近一次优化\n"
         "  gopt_cli rollback-all                回滚全部\n"
         "  gopt_cli list                          显示运行中的支持游戏（优先级/亲和性）\n"
-        "  gopt_cli watch [秒数]                  实时监视 CPU/内存/游戏（Ctrl+C 退出）\n"
+        "  gopt_cli watch [秒数] [--top [N]]     实时监视；--top 显示进程热点榜（CPU%/内存/优先级）\n"
         "  gopt_cli prio <pid> <级别>            设置进程优先级 high|above|normal|below|idle\n"
         "  gopt_cli clean                         清理临时文件（24 小时内文件保留）\n"
         "  gopt_cli fingerprint                 显示本机机器指纹（授权绑定用）\n"
@@ -57,7 +65,7 @@ static void PrintUsage() {
         "  gopt_cli rollback                    Rollback the last optimization\n"
         "  gopt_cli rollback-all                Rollback everything\n"
         "  gopt_cli list                         Show running supported games (priority/affinity)\n"
-        "  gopt_cli watch [seconds]              Live monitor CPU/RAM/games (Ctrl+C to exit)\n"
+        "  gopt_cli watch [seconds] [--top [N]] Live monitor; --top = process hot list (CPU%/RAM/prio)\n"
         "  gopt_cli prio <pid> <level>           Set process priority high|above|normal|below|idle\n"
         "  gopt_cli clean                        Clean temp files (files < 24h are kept)\n"
         "  gopt_cli fingerprint                 Show machine fingerprint (for licensing)\n"
@@ -277,6 +285,162 @@ static bool WriteTextUtf8(const std::string& pathUtf8, const std::string& text) 
     return ok != FALSE && written == want;
 }
 
+// ---------- watch --top 进程级热点榜 ----------
+
+struct WatchTopRow {
+    std::string name;                 // 游戏显示名
+    unsigned pid = 0;
+    double cpuPct = 0.0;
+    bool hasCpu = false;              // 首次 tick 无历史采样 -> false（显示 --）
+    unsigned long long memMB = 0;     // 工作集（MB）
+    std::string prio = "-";           // 优先级短标签
+};
+
+// 优先级类 -> 稳定短标签（安全边界：不使用也不显示 REALTIME）
+static const char* PriorityLabel(DWORD cls) {
+    switch (cls) {
+        case HIGH_PRIORITY_CLASS:         return "HIGH";
+        case ABOVE_NORMAL_PRIORITY_CLASS: return "ABOVE";
+        case NORMAL_PRIORITY_CLASS:       return "NORMAL";
+        case BELOW_NORMAL_PRIORITY_CLASS: return "BELOW";
+        case IDLE_PRIORITY_CLASS:         return "IDLE";
+        default:                          return "-";
+    }
+}
+
+// 标准输出是控制台时原地清屏（纯 Win32，不依赖 ANSI 转义/重定向场景）；
+// 输出被重定向（管道/文件）时返回 false，调用方改为顺序打印整块，便于复制粘贴。
+static bool ClearConsoleIfAvailable() {
+    const HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (h == nullptr || h == INVALID_HANDLE_VALUE) return false;
+    CONSOLE_SCREEN_BUFFER_INFO csbi{};
+    if (!GetConsoleScreenBufferInfo(h, &csbi)) return false;
+    // 只重绘可见窗口区域（不整块填充回滚缓冲区，避免每秒大范围写控制台）
+    const SHORT width = static_cast<SHORT>(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+    const SHORT height = static_cast<SHORT>(csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+    const DWORD cells = static_cast<DWORD>(width) * static_cast<DWORD>(height);
+    const COORD home{0, csbi.srWindow.Top};
+    DWORD written = 0;
+    FillConsoleOutputCharacterA(h, ' ', cells, home, &written);
+    if (!FillConsoleOutputAttribute(h, csbi.wAttributes, cells, home, &written)) return false;
+    return SetConsoleCursorPosition(h, home) != FALSE;
+}
+
+// watch --top [N]：每秒刷新运行中支持游戏的进程级指标，按 CPU% 降序取前 N
+// CPU% = (kernel+user 差值) / (实际间隔秒 * 逻辑核数)，与 GUI 口径一致；首次 tick 为 --
+static int RunWatchTop(AppCore& core, int topN, int maxSecs) {
+    if (topN < 1) topN = 5;
+    if (topN > 8) topN = 8;  // 只会枚举 8 款支持游戏
+    const int logical = core.Profile().logicalCores > 0 ? core.Profile().logicalCores : 1;
+
+    struct ProcSample {
+        unsigned pid = 0;
+        ULONGLONG kernel = 0;  // 100ns
+        ULONGLONG user = 0;    // 100ns
+        bool ok = false;
+    };
+    std::vector<ProcSample> prev;
+    ULONGLONG lastMs = GetTickCount64();
+    const ULONGLONG t0 = lastMs;
+    bool printed = false;
+
+    std::printf(T("进程热点榜 Top %d（每秒刷新，Ctrl+C 退出）\n",
+                  "Process hot list top %d (1s refresh, Ctrl+C to exit)\n"), topN);
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        const ULONGLONG nowMs = GetTickCount64();
+        const double intervalSec = static_cast<double>(nowMs - lastMs) / 1000.0;
+        lastMs = nowMs;
+
+        std::vector<WatchTopRow> rows;
+        std::vector<ProcSample> next;
+        for (const auto& [id, pid] : core.RunningGames()) {
+            WatchTopRow r;
+            r.pid = pid;
+            r.name = gopt::GameIdToString(id);
+            ProcSample s;
+            s.pid = pid;
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (h != nullptr) {
+                FILETIME c{}, e{}, k{}, u{};
+                if (GetProcessTimes(h, &c, &e, &k, &u)) {
+                    s.kernel = (static_cast<ULONGLONG>(k.dwHighDateTime) << 32) | k.dwLowDateTime;
+                    s.user = (static_cast<ULONGLONG>(u.dwHighDateTime) << 32) | u.dwLowDateTime;
+                    s.ok = true;
+                }
+                PROCESS_MEMORY_COUNTERS pmc{};
+                pmc.cb = sizeof(pmc);
+                if (K32GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) {
+                    r.memMB = static_cast<unsigned long long>(
+                        pmc.WorkingSetSize / (1024ull * 1024ull));
+                }
+                r.prio = PriorityLabel(GetPriorityClass(h));
+                CloseHandle(h);
+                if (s.ok && intervalSec > 0.0) {
+                    for (const ProcSample& p : prev) {
+                        if (p.pid != pid || !p.ok) continue;
+                        const ULONGLONG delta = (s.kernel - p.kernel) + (s.user - p.user);
+                        r.cpuPct = static_cast<double>(delta) /
+                                   (intervalSec * 10000000.0 * logical) * 100.0;
+                        if (r.cpuPct < 0.0) r.cpuPct = 0.0;
+                        r.hasCpu = true;
+                        break;
+                    }
+                }
+            }
+            rows.push_back(r);
+            next.push_back(s);
+        }
+        prev.swap(next);
+
+        // CPU% 降序；无 CPU 数据时按内存降序，保证输出稳定可复现
+        std::sort(rows.begin(), rows.end(), [](const WatchTopRow& a, const WatchTopRow& b) {
+            if (a.hasCpu != b.hasCpu) return a.hasCpu && !b.hasCpu;
+            if (a.cpuPct != b.cpuPct) return a.cpuPct > b.cpuPct;
+            if (a.memMB != b.memMB) return a.memMB > b.memMB;
+            return a.name < b.name;
+        });
+        if (static_cast<int>(rows.size()) > topN) rows.resize(static_cast<std::size_t>(topN));
+
+        const bool cleared = ClearConsoleIfAvailable();
+        if (!cleared && printed) std::printf("\n");
+        printed = true;
+
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        std::printf(T("[%02u:%02u:%02u] 进程热点榜 Top %d（逻辑核 %d）\n",
+                      "[%02u:%02u:%02u] process hot list top %d (logical cores %d)\n"),
+                    st.wHour, st.wMinute, st.wSecond, topN, logical);
+
+        std::string hdr = "  ";
+        hdr += PadDisplay("pid", 7);
+        hdr += PadDisplay(T("游戏", "game"), 14);
+        hdr += PadDisplay("CPU%", 8);
+        hdr += PadDisplay(T("内存MB", "MEM MB"), 10);
+        hdr += T("优先级", "PRIO");
+        std::printf("%s\n", hdr.c_str());
+
+        if (rows.empty()) {
+            std::printf("  %s\n", T("无（当前没有运行中的支持游戏）",
+                                    "none (no supported games running)"));
+        } else {
+            for (const WatchTopRow& r : rows) {
+                std::string line = "  ";
+                line += PadDisplay(StrFmt("%u", r.pid), 7);
+                line += PadDisplay(r.name, 14);
+                line += PadDisplay(r.hasCpu ? StrFmt("%.1f%%", r.cpuPct) : std::string("--"), 8);
+                line += PadDisplay(StrFmt("%llu", r.memMB), 10);
+                line += r.prio;
+                std::printf("%s\n", line.c_str());
+            }
+        }
+        std::fflush(stdout);
+        if (maxSecs > 0 && (GetTickCount64() - t0) / 1000 >= static_cast<ULONGLONG>(maxSecs)) break;
+    }
+    std::printf("\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         PrintUsage();
@@ -337,6 +501,9 @@ int main(int argc, char** argv) {
     std::string gameArg, gameExe, outPath;
     bool dryRun = false;
     bool outMissing = false;
+    bool topMode = false;   // watch --top：进程热点榜
+    bool topBad = false;    // --top 后跟了非法 N
+    int topN = 5;           // 默认显示前 5
     AppConfig cfg;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -345,6 +512,17 @@ int main(int argc, char** argv) {
         } else if (a == "--out") {
             if (i + 1 < argc) outPath = argv[++i];
             else outMissing = true;
+        } else if (a == "--top") {
+            topMode = true;
+            if (i + 1 < argc) {
+                const std::string nxt = argv[i + 1];
+                if (!nxt.empty() && nxt.find_first_not_of("0123456789") == std::string::npos) {
+                    topN = std::atoi(nxt.c_str());  // --top 8
+                    ++i;
+                } else if (!nxt.empty() && nxt[0] != '-') {
+                    topBad = true;                  // --top abc
+                }
+            }
         } else if (a == "--power") {
             cfg.allowPowerSchemeSwitch = true;
         } else if (a == "--dry-run") {
@@ -645,10 +823,16 @@ int main(int argc, char** argv) {
 
     if (cmd == "watch") {
         // 实时监视器：CPU% / 内存 / 运行中的支持游戏（1 秒刷新；Ctrl+C 退出）
-        // 可选参数：秒数（0/缺省 = 持续运行直到 Ctrl+C）
+        // 可选参数：秒数（0/缺省 = 持续运行直到 Ctrl+C）；--top [N] 切换为进程级热点榜
+        if (topBad) {
+            std::puts(T("错误：--top 需要一个正整数 N（缺省 5）。",
+                        "Error: --top requires a positive integer N (default 5)."));
+            return 1;
+        }
         AppCore core(cfg);
         int maxSecs = 0;
         if (!gameArg.empty()) maxSecs = std::atoi(gameArg.c_str());
+        if (topMode) return RunWatchTop(core, topN, maxSecs);
         ULARGE_INTEGER idlePrev{}, kPrev{}, uPrev{};
         {
             FILETIME i{}, k{}, u{};
