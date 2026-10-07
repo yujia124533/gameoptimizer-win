@@ -1,6 +1,7 @@
 // GameOptimizer 命令行入口（第 5 步：AppCore 协调层 + CLI，发布版）
 #include <cctype>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -29,6 +30,7 @@ static void PrintUsage() {
     std::puts(T(
         "\n用法:\n"
         "  gopt_cli status                      查看硬件指纹、预设与授权\n"
+        "  gopt_cli report [--out <文件路径>]    诊断报告（可导出为 UTF-8 文本）\n"
         "  gopt_cli apply <game> [选项]         应用优化（自动快照 + 看门狗监控）\n"
         "  gopt_cli rollback                    回滚最近一次优化\n"
         "  gopt_cli rollback-all                回滚全部\n"
@@ -50,6 +52,7 @@ static void PrintUsage() {
         "安全边界: 无注入、无内核 Hook；优先级上限 HIGH；全部修改可一键回滚。",
         "\nUsage:\n"
         "  gopt_cli status                      Show hardware, presets and license\n"
+        "  gopt_cli report [--out <file>]       Diagnostic report (export as UTF-8 text)\n"
         "  gopt_cli apply <game> [options]      Apply optimization (auto snapshot + watchdog)\n"
         "  gopt_cli rollback                    Rollback the last optimization\n"
         "  gopt_cli rollback-all                Rollback everything\n"
@@ -111,6 +114,169 @@ static bool ParseGame(const char* s, GameId* out) {
     return false;
 }
 
+// ---------- report 子命令辅助（诊断报告：稳定字段对齐 + UTF-8 导出） ----------
+
+// 显示宽度：ASCII 记 1 列，非 ASCII（中日韩等）记 2 列，保证中英文报告都字段对齐
+static int DisplayWidth(const std::string& s) {
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) { ++w; i += 1; }
+        else if ((c & 0xE0) == 0xC0) { w += 2; i += 2; }
+        else if ((c & 0xF0) == 0xE0) { w += 2; i += 3; }
+        else if ((c & 0xF8) == 0xF0) { w += 2; i += 4; }
+        else { ++w; i += 1; }
+    }
+    return w;
+}
+
+// 按显示宽度左侧补空格到 cols 列
+static std::string PadDisplay(const std::string& s, int cols) {
+    std::string r = s;
+    const int w = DisplayWidth(s);
+    if (w < cols) r.append(static_cast<std::size_t>(cols - w), ' ');
+    return r;
+}
+
+static std::string StrFmt(const char* fmt, ...) {
+    char buf[512] = {};
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    return std::string(buf);
+}
+
+// 一行 "标签: 值"，标签按显示宽度左对齐
+static void AppendField(std::string& out, const std::string& label, const std::string& value,
+                        int labelCols = 20) {
+    out += PadDisplay(label, labelCols);
+    out += ": ";
+    out += value;
+    out += "\n";
+}
+
+// 上次优化时间：%LOCALAPPDATA%\GameOptimizer\savepoints.txt 的最后写入时间（稳定文件 API）
+static std::string LastOptimizeText() {
+    wchar_t base[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) <= 0)
+        return T("未知（读不到 LOCALAPPDATA）", "unknown (LOCALAPPDATA unavailable)");
+    const std::wstring p = std::wstring(base) + L"\\GameOptimizer\\savepoints.txt";
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (!GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &fa))
+        return T("从未优化（无快照文件）", "never (no snapshot file)");
+    SYSTEMTIME st{};
+    if (!FileTimeToSystemTime(&fa.ftLastWriteTime, &st))
+        return T("未知（时间戳不可读）", "unknown (timestamp unreadable)");
+    return StrFmt("%04u-%02u-%02u %02u:%02u:%02u", st.wYear, st.wMonth, st.wDay,
+                  st.wHour, st.wMinute, st.wSecond);
+}
+
+// 组装诊断报告（纯文本；字段对齐，中英文均可直接复制粘贴）
+static std::string BuildReport() {
+    AppCore core;
+    std::string out;
+    out += "GameOptimizer ";
+    out += T("诊断报告", "diagnostic report");
+    out += "\n==============================================================\n";
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    AppendField(out, T("生成时间", "Generated"),
+                StrFmt("%04u-%02u-%02u %02u:%02u:%02u", now.wYear, now.wMonth, now.wDay,
+                       now.wHour, now.wMinute, now.wSecond));
+    AppendField(out, T("版本", "Version"), GOPT_VERSION_STR);
+
+    // 提权状态：如实显示；未提权时电源切换与系统调优受限
+    const bool elevated = gopt::HAL::IsElevated();
+    AppendField(out, T("提权状态", "Elevation"),
+                elevated ? T("已提权（电源切换/系统调优可用）",
+                            "elevated (power scheme / system tuning available)")
+                         : T("未提权（电源方案切换与系统调优受限，需以管理员运行）",
+                             "not elevated (power scheme switching and system tuning limited; "
+                             "run as administrator)"));
+
+    // 当前电源方案：只读查询，失败时输出 <unknown>
+    GUID scheme{};
+    std::string schemeName = "<unknown>";
+    if (gopt::HAL::QueryActivePowerScheme(&scheme)) {
+        const std::string n = gopt::HAL::PowerSchemeName(scheme);
+        if (!n.empty()) schemeName = n;
+    }
+    AppendField(out, T("当前电源方案", "Power scheme"), schemeName);
+
+    // 运行中的支持游戏
+    std::string gamesText;
+    for (const auto& [id, pid] : core.RunningGames()) {
+        if (!gamesText.empty()) gamesText += ", ";
+        gamesText += StrFmt("%s(pid %u)", gopt::GameIdToString(id).c_str(),
+                            static_cast<unsigned>(pid));
+    }
+    if (gamesText.empty())
+        gamesText = T("无（当前没有运行中的支持游戏）", "none (no supported games running)");
+    AppendField(out, T("运行中的游戏", "Running games"), gamesText);
+    AppendField(out, T("上次优化时间", "Last optimized"), LastOptimizeText());
+
+    out += "\n[";
+    out += T("硬件概要", "Hardware");
+    out += "]\n";
+    out += core.Profile().ToString();
+    if (out.empty() || out.back() != '\n') out += "\n";
+
+    out += "\n[";
+    out += T("8 款游戏预设概览", "Presets overview (8 games)");
+    out += "]\n";
+    for (const GameId id : {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,
+                            GameId::PUBG, GameId::Valorant, GameId::Apex,
+                            GameId::Dota2, GameId::Overwatch2}) {
+        const gopt::GamePreset p = core.ResolvedPreset(id);
+        out += "  ";
+        out += PadDisplay(gopt::GameIdToString(id), 14);
+        out += p.description;
+        out += "\n";
+    }
+
+    out += "\n[";
+    out += T("安全边界", "Safety");
+    out += "]\n";
+    out += T("无注入、无内核 Hook；优先级上限 HIGH（不使用 REALTIME）；所有修改均可一键回滚。",
+             "No injection, no kernel hooks; priority capped at HIGH (never REALTIME); "
+             "every change is rollable.");
+    out += "\n";
+    return out;
+}
+
+// 路径转宽字符：优先按 UTF-8（控制台 chcp 65001）；非法 UTF-8 时回退系统 ANSI 代码页
+// （Windows 下 CRT 的 argv 默认是 ANSI），保证中文/空格路径都能正确落到文件
+static std::wstring PathToWide(const std::string& path) {
+    const UINT codepages[2] = {CP_UTF8, CP_ACP};
+    for (const UINT cp : codepages) {
+        const DWORD flags = (cp == CP_UTF8) ? MB_ERR_INVALID_CHARS : 0;
+        const int n = MultiByteToWideChar(cp, flags, path.c_str(), -1, nullptr, 0);
+        if (n <= 0) continue;
+        std::wstring w(static_cast<std::size_t>(n), L'\0');
+        if (MultiByteToWideChar(cp, flags, path.c_str(), -1, &w[0], n) <= 0) continue;
+        w.resize(static_cast<std::size_t>(n) - 1);
+        return w;
+    }
+    return std::wstring();
+}
+
+// 以 UTF-8（无 BOM）写文本文件；路径经 UTF-16 转换后交给官方 Win32 API
+static bool WriteTextUtf8(const std::string& pathUtf8, const std::string& text) {
+    if (pathUtf8.empty()) return false;
+    const std::wstring wpath = PathToWide(pathUtf8);
+    if (wpath.empty()) return false;
+    HANDLE h = CreateFileW(wpath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const DWORD want = static_cast<DWORD>(text.size());
+    const BOOL ok = WriteFile(h, text.data(), want, &written, nullptr);
+    CloseHandle(h);
+    return ok != FALSE && written == want;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         PrintUsage();
@@ -168,13 +334,17 @@ int main(int argc, char** argv) {
     }
 
     // 解析公共选项
-    std::string gameArg, gameExe;
+    std::string gameArg, gameExe, outPath;
     bool dryRun = false;
+    bool outMissing = false;
     AppConfig cfg;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--game-exe" && i + 1 < argc) {
             gameExe = argv[++i];
+        } else if (a == "--out") {
+            if (i + 1 < argc) outPath = argv[++i];
+            else outMissing = true;
         } else if (a == "--power") {
             cfg.allowPowerSchemeSwitch = true;
         } else if (a == "--dry-run") {
@@ -184,6 +354,26 @@ int main(int argc, char** argv) {
         } else if (gameArg.empty() && !a.empty() && a[0] != '-') {
             gameArg = a;
         }
+    }
+
+    if (cmd == "report") {
+        // 诊断报告：一条命令拿到全部状态；可选 --out 导出 UTF-8 文本
+        if (outMissing) {
+            std::puts(T("错误：--out 需要一个文件路径。", "Error: --out requires a file path."));
+            return 1;
+        }
+        const std::string report = BuildReport();
+        std::fputs(report.c_str(), stdout);
+        if (!outPath.empty()) {
+            if (WriteTextUtf8(outPath, report)) {
+                std::printf(T("已写入（UTF-8 无 BOM）: %s\n", "Written (UTF-8, no BOM): %s\n"),
+                            outPath.c_str());
+            } else {
+                std::printf(T("写入失败: %s\n", "Write failed: %s\n"), outPath.c_str());
+                return 1;
+            }
+        }
+        return 0;
     }
 
     if (cmd == "status") {

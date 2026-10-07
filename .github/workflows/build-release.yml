@@ -15,6 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本一致性校验（发布前必跑）：src/version.h 必须与 resources 双 RC / README 更新日志一致，失败即中断构建
+      - name: Version consistency check
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tools/check_version.ps1
+
       # MSYS2 MinGW64 环境（gcc + windres），与本机 w64devkit 编译参数保持一致
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2

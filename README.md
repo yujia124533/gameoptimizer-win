@@ -25,6 +25,14 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
 
+## 🎉 v1.0.18 更新日志
+
+- **诊断报告**：`gopt_cli report [--out <文件路径>]`——一条命令导出全部状态（版本 / 硬件 / 提权 / 当前电源方案 / 运行中游戏 / 上次优化时间 / 8 款预设概览 / 安全边界），支持 UTF-8 无 BOM 导出，字段按显示宽度对齐（中英文均可直接复制粘贴）
+- **GUI「诊断 / 关于」**：总览页新增按钮，弹窗展示版本、CPU/GPU/内存、提权状态、当前电源方案、上次优化时间与安全声明（中英双语）
+- **托盘「清理临时文件」**：托盘右键菜单可直接执行临时清理，结果写入界面日志
+- **README 功能矩阵 + FAQ**：GUI/CLI 能力对照表（12 项）与 6 条常见问题（反作弊安全 / 管理员权限 / 回滚 / 电源方案 unknown / 清理会不会误删 / 如何新增游戏）
+- **CI 版本一致性校验**：构建前运行 `tools/check_version.ps1`，`version.h` 与双 RC / README 更新日志不一致时直接中断发布
+
 ## 🎉 v1.0.17 更新日志
 
 - **CPU/内存实时曲线**：总览页新增 48 秒实时迷你图（深色面板，CPU 青色 / 内存绿色双曲线，纯 GDI 绘制、每秒采样）——优化前后趋势一目了然
@@ -118,6 +126,25 @@ Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.c
 - **所有功能免费**：电源方案/驱动帧延迟/工作集等全部优化项对所有人开放，无授权门控（仅受系统能力限制：管理员/厂商库）
 - **双界面**：原生 Win32 **GUI**（一键优化/游戏选择/代启动路径/每游戏设置）+ **CLI**
 
+## 功能矩阵
+
+GUI 五大页（总览 / 游戏优化 / 系统调优 / 进程 / 启动项）与 CLI 命令的对应关系（√ = 有入口，— = 无）：
+
+| 功能 | GUI | CLI | 说明 |
+| --- | :---: | :---: | --- |
+| 一键优化 | √ | √ | GUI 总览页「一键性能优化」；CLI `gopt_cli optimize [游戏 / system]`（未检测到游戏时做系统级优化） |
+| 游戏预设 | √ | √ | GUI「游戏优化」页选游戏后点「应用优化」；CLI `gopt_cli apply <game>`（优先级 / 亲和性 / 工作集 / 驱动帧延迟） |
+| 系统调优 | √ | √ | GUI「系统调优」页 高性能档 / 平衡档 / 恢复调优；CLI `tune high / balanced / restore / status`（需管理员） |
+| 临时清理 | √ | √ | GUI「清理临时文件」；CLI `gopt_cli clean`（`%TEMP%`，24 小时内修改的文件保留、占用/锁定项跳过） |
+| 进程优先级 | √ | √ | GUI「进程」页 提升优先级 / 恢复正常；CLI `prio <pid> high / above / normal / below / idle`（上限 HIGH） |
+| 进程 CPU·内存 | √ | — | GUI「进程」页每个进程显示 优先级 + CPU% + 内存 MB（1 秒刷新）；CLI `list` 只有优先级/亲和性、`watch` 只有整机 CPU/内存 |
+| 启动项管理 | √ | √ | GUI「启动项」页 禁用 / 启用 / 恢复全部；CLI `startup list / disable / enable / restore`（禁用=改名保留，可还原） |
+| 实时监视 | √ | √ | GUI 总览页 CPU/内存卡每秒刷新 + 48 秒实时曲线；CLI `gopt_cli watch [秒数]` |
+| 干跑预览 dry-run | — | √ | CLI `apply <game> --dry-run` / `optimize --dry-run` 只读预览将执行的每一项；GUI 无 dry-run 开关（实际执行时由流程面板逐步显示） |
+| 系统托盘 | √ | — | GUI：关闭窗口最小化到托盘、双击恢复、右键菜单「打开主界面 / 一键优化 / 退出」（含单实例保护） |
+| 开机自启 | √ | — | GUI 总览页「开机自启动」勾选（HKCU Run 写入当前路径，默认关闭） |
+| 回滚 | √ | √ | GUI「回滚」按钮；CLI `rollback` / `rollback-all`（快照持久化到 `%LOCALAPPDATA%\GameOptimizer`，跨进程有效） |
+
 ## 界面
 
 ```bat
@@ -139,6 +166,26 @@ gopt_cli clean                         清理临时文件（%TEMP%，24h 内保�
 gopt_cli fingerprint / license status  机器指纹 / 授权（所有功能免费，授权可选）
 gopt_cli --version                     版本
 ```
+
+## FAQ 常见问题
+
+**① 带反作弊的游戏（ACE / VAC / Riot 等）能安全用吗？**
+可以。本工具只用官方 Win32 API（`SetPriorityClass` / `SetProcessAffinityMask` / `SetProcessWorkingSetSize` / `PowerSetActiveScheme`），**不注入进程、不加载驱动、不做内核 Hook**，操作类型与 Process Lasso 同类；优先级上限为 `HIGH_PRIORITY_CLASS`，从不使用 REALTIME。它不读写游戏内存、不改动游戏文件。
+
+**② 需要管理员权限吗？**
+分功能：进程优先级 / 亲和性 / 工作集 / 一键优化**不需要**管理员（但若游戏本身以管理员运行，本工具也需以管理员运行才能打开该进程）；**系统调优（电源方案、处理器频率、调度优先级）需要**管理员。GUI 底部状态栏与 `gopt_cli status` 都会显示当前是否已提权，未提权时明确提示「部分功能需管理员」。
+
+**③ 怎么回滚？**
+每次优化前都会把原值快照持久化到磁盘（`%LOCALAPPDATA%\GameOptimizer`），所以回滚不依赖发起优化的那个进程：GUI 点「回滚」，或在任意终端执行 `gopt_cli rollback`（撤销最近一次）/ `gopt_cli rollback-all`（撤销全部）。跨进程、秒级生效；应用后看门狗发现系统响应异常也会自动回滚。
+
+**④ 为什么界面显示「电源方案 未知 / unknown / `<unknown>`」？**
+这是只读查询失败时的正常降级，不影响优化与回滚：当前会话权限不足或系统未返回活动电源方案时，GUI「系统调优」页显示「未知 / unknown」，底部状态栏对应位置显示 `Power ?`；查询成功但方案友好名读不出时（`HAL::PowerSchemeName`）显示 `<unknown>`。想看到具体名称可尝试以管理员运行。
+
+**⑤ 清理临时文件会删掉我正在用的文件吗？**
+不会。`%TEMP%` 清理按「时间 + 可删除性」双重保护：**24 小时内修改过的文件一律保留**，被占用 / 锁定的项自动跳过；结果报告分别给出「已清理 / 跳过 / 保留」三类数量。
+
+**⑥ 支持哪些游戏？怎么添加新游戏？**
+内置 8 款：三角洲行动、英雄联盟、CS2、绝地求生、无畏契约、Apex Legends、Dota 2、守望先锋2。新增预设只需在 `src/preset/GameOptimizationPreset.cpp` 加一条（详见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)），无需改动界面代码。
 
 ## 构建
 

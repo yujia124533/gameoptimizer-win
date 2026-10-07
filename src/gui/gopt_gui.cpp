@@ -41,6 +41,7 @@ static HWND g_pages[5] = {};
 static HWND g_nav[5] = {};
 static HWND g_bigOpt = nullptr;                        // 总览：一键优化大按钮
 static HWND g_autoStart = nullptr;                     // 总览：开机自启动
+static HWND g_btnAbout = nullptr;                      // 总览：诊断 / 关于
 // 游戏优化页
 static HWND g_combo, g_path, g_args, g_power, g_btnSave, g_btnBrowse, g_btnApply, g_btnRollback;
 // 系统调优页
@@ -99,6 +100,7 @@ enum {
     IDC_BIGOPT = 301,
     IDC_COMBO = 302, IDC_PATH = 303, IDC_BROWSE = 304, IDC_ARGS = 305, IDC_SAVE = 306,
     IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309, IDC_AUTOSTART = 310,
+    IDC_ABOUT = 311,
     IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403, IDC_CLEAN = 404,
     IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502, IDC_PROC_HIGH = 503, IDC_PROC_NORM = 504,
     IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
@@ -520,6 +522,37 @@ static std::string LastOptimizeTime() {
     return std::string(T("上次优化：", "Last optimized: ")) + buf;
 }
 
+// ---------- 诊断 / 关于（只读信息汇总；MessageBoxW 稳定 API） ----------
+// 一行一项：版本 / CPU / GPU / 内存 / 提权 / 电源方案 / 上次优化 / 安全声明
+static void ShowDiagnosticsDialog() {
+    std::string txt;
+    txt += std::string("GameOptimizer v") + GOPT_VERSION_STR + "\n";
+    if (g_core != nullptr) {
+        const gopt::HardwareProfile p = g_core->Profile();
+        txt += std::string(T("CPU：", "CPU: ")) + p.cpuModel + "\n";
+        txt += std::string(T("物理核：", "Physical cores: ")) + std::to_string(p.physicalCores)
+             + T("  逻辑核：", "  Logical cores: ") + std::to_string(p.logicalCores) + "\n";
+        txt += std::string(T("GPU：", "GPU: ")) + p.gpuVendor + " " + p.gpuModel
+             + "（" + std::to_string(p.vramMB / 1024) + " GB / Driver " + p.gpuDriverVersion + "）\n";
+        txt += std::string(T("内存：", "RAM: ")) + std::to_string(p.systemRamMB / 1024) + " GB"
+             + T("（可用 ", " (free ") + std::to_string(p.availableRamMB / 1024) + " GB）\n";
+    }
+    txt += std::string(T("提权状态：", "Elevation: "))
+         + (gopt::HAL::IsElevated() ? T("已提权（管理员）", "elevated (admin)")
+                                    : T("未提权（部分功能需管理员）", "not elevated (some features need admin)"))
+         + "\n";
+    GUID scheme{};
+    std::string power = "<unknown>";  // 查询失败时的显式占位
+    if (gopt::HAL::QueryActivePowerScheme(&scheme)) power = gopt::HAL::PowerSchemeName(scheme);
+    txt += std::string(T("当前电源方案：", "Active power scheme: ")) + power + "\n";
+    txt += LastOptimizeTime() + "\n";
+    txt += std::string(T("安全声明：无注入 · 无内核 Hook · 优先级上限 HIGH · 支持回滚",
+                         "Safety: no injection, no kernel hooks, priority capped at HIGH, rollback supported"));
+    MessageBoxW(g_hwnd, Utf8ToWide(txt).c_str(),
+                Utf8ToWide(T("诊断 / 关于 - GameOptimizer", "Diagnostics / About - GameOptimizer")).c_str(),
+                MB_OK | MB_ICONINFORMATION);
+}
+
 // ---------- 窗口过程 ----------
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -571,6 +604,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_bigOpt = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 18, 158, 220, 54, IDC_BIGOPT);
             SendMessageW(g_bigOpt, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBig), TRUE);
             g_autoStart = makeCtl(p, L"BUTTON", L"", BS_AUTOCHECKBOX, 252, 170, 220, 24, IDC_AUTOSTART);
+            // 诊断 / 关于：大按钮右侧（x 490 起，避开 252-472 的自启动复选框；y 与一键优化对齐）
+            g_btnAbout = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 490, 158, 220, 54, IDC_ABOUT);
             g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 44, 0);
             // CPU/内存曲线：必须是主窗口子控件（SS_OWNERDRAW 的 WM_DRAWITEM 会发给父窗口）
             // 位置对齐总览页内容区 (222,62) + (18,278)；由 ShowPage 联动显隐
@@ -635,6 +670,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             for (int i = 0; i < 5; ++i) Label(g_nav[i], navZh[i], navEn[i]);
             Label(g_bigOpt, "一键性能优化", "One-click Boost");
             Label(g_autoStart, "开机自启动（随系统开机运行）", "Start with Windows");
+            Label(g_btnAbout, "诊断 / 关于", "Diagnostics / About");
             Label(g_btnBrowse, "浏览...", "Browse...");
             Label(g_btnApply, "应用优化", "Apply");
             Label(g_btnRollback, "回滚", "Rollback");
@@ -973,6 +1009,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                        + (on ? T("已开启", "enabled") : T("已关闭", "disabled")) + "\n\n");
                 return 0;
             }
+            if (id == IDC_ABOUT) { ShowDiagnosticsDialog(); return 0; }
             if (id == IDC_BROWSE) { BrowsePath(); return 0; }
             if (id == IDC_SAVE) { SaveCurrentGameConfig(); return 0; }
             if (id == IDC_APPLY) {
@@ -1132,6 +1169,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     HMENU menu = CreatePopupMenu();
                     AppendMenuW(menu, MF_STRING, 1, L"打开主界面 (Open)");
                     AppendMenuW(menu, MF_STRING, 3, L"一键优化 (One-click Boost)");
+                    AppendMenuW(menu, MF_STRING, 4, L"清理临时文件 (Clean Temp)");
                     AppendMenuW(menu, MF_STRING, 2, L"退出 (Exit)");
                     SetForegroundWindow(hwnd);
                     const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
@@ -1141,6 +1179,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     else if (cmd == 3) {
                         ShowMainWindow(hwnd);
                         PostMessageW(hwnd, WM_COMMAND, IDC_BIGOPT, 0);
+                    }
+                    else if (cmd == 4) {
+                        // 托盘「清理临时文件」：先显示主窗口，再把清理结果写入界面日志（同步调用，与 IDC_CLEAN 一致）
+                        ShowMainWindow(hwnd);
+                        AddLog(SystemTuner::CleanTemp());
+                        AddLog("\n\n");
                     }
                     else if (cmd == 2) {
                         TrayRemove();
