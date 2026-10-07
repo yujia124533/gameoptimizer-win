@@ -42,6 +42,7 @@ static void PrintUsage() {
         "  gopt_cli apply <game> [选项]         应用优化（自动快照 + 看门狗监控）\n"
         "  gopt_cli rollback                    回滚最近一次优化\n"
         "  gopt_cli rollback-all                回滚全部\n"
+        "  gopt_cli savepoints [list|show <n>]   只读查看快照历史（list 默认；show 看第 n 条明细）\n"
         "  gopt_cli list                          显示运行中的支持游戏（优先级/亲和性）\n"
         "  gopt_cli watch [秒数] [--top [N]]     实时监视；--top 显示进程热点榜（CPU%/内存/优先级）\n"
         "  gopt_cli prio <pid> <级别>            设置进程优先级 high|above|normal|below|idle\n"
@@ -64,6 +65,7 @@ static void PrintUsage() {
         "  gopt_cli apply <game> [options]      Apply optimization (auto snapshot + watchdog)\n"
         "  gopt_cli rollback                    Rollback the last optimization\n"
         "  gopt_cli rollback-all                Rollback everything\n"
+        "  gopt_cli savepoints [list|show <n>]   Read-only snapshot history (list by default; show <n>)\n"
         "  gopt_cli list                         Show running supported games (priority/affinity)\n"
         "  gopt_cli watch [seconds] [--top [N]] Live monitor; --top = process hot list (CPU%/RAM/prio)\n"
         "  gopt_cli prio <pid> <level>           Set process priority high|above|normal|below|idle\n"
@@ -438,6 +440,132 @@ static int RunWatchTop(AppCore& core, int topN, int maxSecs) {
         if (maxSecs > 0 && (GetTickCount64() - t0) / 1000 >= static_cast<ULONGLONG>(maxSecs)) break;
     }
     std::printf("\n");
+    return 0;
+}
+
+// ---------- savepoints 子命令（只读快照历史；消费 AppCore 只读门面，绝不写文件/改设置） ----------
+// 判断是否为纯数字（用于 show <n>；"007" 允许，"1a"/"+"、"-1"、"" 均拒绝）
+static bool IsAllDigits(const std::string& s) {
+    if (s.empty()) return false;
+    for (const char c : s) {
+        if (c < '0' || c > '9') return false;
+    }
+    return true;
+}
+
+// 把 "savepoints.txt 不存在" 这类查询错误文本压缩成单行（避免破坏列表排版）
+static std::string OneLineReason(const std::string& s) {
+    std::string r = s;
+    for (char& c : r) {
+        if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+    }
+    return r;
+}
+
+// 取「最新在前」的快照视图 + 查询错误。只读调用，不创建目录、不写文件。
+static std::vector<gopt::SavepointInfo> LoadSavepointsForDisplay(const AppCore& core,
+                                                                std::string* errorOut) {
+    std::vector<gopt::SavepointInfo> items = core.RecentSavepoints(0);  // 0 = 全部，最新在前
+    if (errorOut != nullptr) *errorOut = core.SavepointsError();
+    return items;
+}
+
+// list：序号 / 时间 / 涉及游戏或进程 / 可恢复条目数；最新一条标 *（回滚最近一次针对它）
+static int RunSavepointsList(AppCore& core) {
+    std::string error;
+    const std::vector<gopt::SavepointInfo> items = LoadSavepointsForDisplay(core, &error);
+
+    std::printf("%s:\n", T("快照历史（最新在前）", "Snapshot history (newest first)"));
+    if (items.empty()) {
+        if (!error.empty()) {
+            // 只读查询失败（文件不存在/格式异常）：按「空列表 + 原因」输出，仍为退出码 0
+            std::printf("  %s\n", T("无快照", "no snapshots"));
+            std::printf("  %s %s\n", T("原因：", "reason:"), OneLineReason(error).c_str());
+        } else {
+            // 文件存在但为空/仅空行 → 视为从未优化过，无错误
+            std::puts(T("  无快照（尚未优化过）", "  no snapshots (never optimized)"));
+        }
+        return 0;
+    }
+
+    std::string hdr = "  ";
+    hdr += PadDisplay(T("序号", "No."), 6);
+    hdr += PadDisplay(T("时间", "Time"), 22);
+    hdr += PadDisplay(T("游戏/进程", "Game / process"), 30);
+    hdr += PadDisplay(T("可恢复条目", "Entries"), 12);
+    hdr += T("最新", "Latest");
+    std::puts(hdr.c_str());
+
+    for (const gopt::SavepointInfo& sp : items) {
+        const std::string no = StrFmt("%d", sp.index);
+        const std::string mark = sp.isLatest ? "*" : " ";
+        const std::string time = sp.timeText.empty() ? T("(时间未知)", "(time unknown)") : sp.timeText;
+        const std::string summary = sp.processSummary.empty()
+                                        ? T("(未记录进程)", "(no process recorded)")
+                                        : sp.processSummary;
+        std::string line = "  ";
+        line += PadDisplay(no, 6);
+        line += PadDisplay(time, 22);
+        line += PadDisplay(summary, 30);
+        line += PadDisplay(StrFmt("%d", sp.entryCount), 12);
+        line += mark;
+        std::printf("%s\n", line.c_str());
+    }
+    std::printf(T("共 %d 条；* = 回滚最近一次针对的快照。\n",
+                  "%d snapshot(s); * = the one `rollback` uses.\n"),
+                static_cast<int>(items.size()));
+    std::printf("%s %s\n", T("文件：", "File:"), AppCore::SavepointsFilePath().c_str());
+    return 0;
+}
+
+// show <n>：n = list 中显示的序号（1 = 最新）；越界/非数字 → 用法提示 + 非 0
+static int RunSavepointsShow(AppCore& core, const std::string& arg) {
+    if (!IsAllDigits(arg)) {
+        std::puts(T("错误：show 需要序号（例如: gopt_cli savepoints show 1）。",
+                    "Error: show needs a snapshot number (e.g. gopt_cli savepoints show 1)."));
+        std::puts(T("用法: gopt_cli savepoints [list | show <n>]",
+                    "Usage: gopt_cli savepoints [list | show <n>]"));
+        return 1;
+    }
+    const int n = std::atoi(arg.c_str());
+    std::string error;
+    const std::vector<gopt::SavepointInfo> items = LoadSavepointsForDisplay(core, &error);
+    if (n < 1 || static_cast<std::size_t>(n) > items.size()) {
+        std::printf(T("错误：序号 %d 越界（当前共 %d 条，有效范围 1~%d）。\n",
+                      "Error: snapshot %d is out of range (have %d, valid range 1..%d).\n"),
+                    n, static_cast<int>(items.size()), static_cast<int>(items.size()));
+        if (items.empty() && !error.empty())
+            std::printf("%s %s\n", T("原因：", "reason:"), OneLineReason(error).c_str());
+        std::puts(T("用法: gopt_cli savepoints [list | show <n>]",
+                    "Usage: gopt_cli savepoints [list | show <n>]"));
+        return 1;
+    }
+
+    const gopt::SavepointInfo& sp = items[static_cast<std::size_t>(n) - 1];
+    // 主标识用 list 里的序号（1 = 最新），并注明文件内序号，避免与 list 排版混淆
+    std::printf("%s #%d/%d", T("快照", "Snapshot"), n, static_cast<int>(items.size()));
+    if (sp.index != n) std::printf(T("（文件第 %d 条）", " (file entry %d)"), sp.index);
+    std::puts(sp.isLatest ? T("（最新）", " (latest)") : "");
+    std::printf("  %s %s\n", T("时间    :", "Time    :"),
+                (sp.timeText.empty() ? T("(时间未知)", "(time unknown)") : sp.timeText).c_str());
+    std::printf("  %s %s\n", T("游戏/进程:", "Game/Proc:"),
+                (sp.processSummary.empty() ? T("(未记录进程)", "(no process recorded)")
+                                           : sp.processSummary).c_str());
+    if (!sp.gameName.empty())
+        std::printf("  %s %s\n", T("游戏标识:", "Game id :"), sp.gameName.c_str());
+    if (sp.processId != 0)
+        std::printf("  %s %u\n", T("进程 PID:", "PID     :"), sp.processId);
+    std::printf("  %s %d\n", T("可恢复条目:", "Entries :"), sp.entryCount);
+
+    if (sp.entries.empty()) {
+        std::puts(T("  （无可恢复条目）", "  (no restorable entries)"));
+    } else {
+        std::printf("%s\n", T("  明细：", "  Details:"));
+        for (std::size_t i = 0; i < sp.entries.size(); ++i) {
+            std::printf("    %s\n", sp.entries[i].c_str());
+        }
+    }
+    std::printf("%s %s\n", T("文件：", "File:"), AppCore::SavepointsFilePath().c_str());
     return 0;
 }
 
@@ -931,6 +1059,28 @@ int main(int argc, char** argv) {
         AppCore core(cfg);
         std::puts(core.RollbackAll().c_str());
         return 0;
+    }
+
+    // 只读快照历史：gopt_cli savepoints [list | show <n>]（list 为默认）
+    if (cmd == "savepoints") {
+        AppCore core(cfg);
+        const std::string sub = gameArg.empty() ? std::string("list") : gameArg;
+        if (sub == "list") return RunSavepointsList(core);
+        if (sub == "show") {
+            if (argc < 4) {  // 缺序号：明确用法提示（非 0）
+                std::puts(T("错误：show 需要序号（例如: gopt_cli savepoints show 1）。",
+                            "Error: show needs a snapshot number (e.g. gopt_cli savepoints show 1)."));
+                std::puts(T("用法: gopt_cli savepoints [list | show <n>]",
+                            "Usage: gopt_cli savepoints [list | show <n>]"));
+                return 1;
+            }
+            return RunSavepointsShow(core, argv[3]);
+        }
+        // 未知子命令（如 savepoints bogus）也走用法提示
+        std::printf(T("错误：未知子命令 '%s'。\n", "Error: unknown subcommand '%s'.\n"), sub.c_str());
+        std::puts(T("用法: gopt_cli savepoints [list | show <n>]",
+                    "Usage: gopt_cli savepoints [list | show <n>]"));
+        return 1;
     }
 
     PrintUsage();

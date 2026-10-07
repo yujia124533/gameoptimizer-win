@@ -11,6 +11,11 @@ src/tuning/SystemTuner.cpp \
 src/tuning/StartupManager.cpp \
 src/license/License.cpp src/core/AppCore.cpp"
 
+# v1.1.0 UI 专用源码：只进 GUI 目标（CLI/自检不链接，避免引入 comctl32 等 UI 依赖）
+UISRCS="src/gui/ui_theme.cpp src/gui/ui_widgets.cpp \
+src/gui/page_dashboard.cpp src/gui/page_game.cpp \
+src/gui/page_tune.cpp src/gui/page_process.cpp src/gui/page_startup.cpp"
+
 mkdir -p build release/GameOptimizer
 
 # 使用说明（docs 中的跟踪副本）与自检脚本
@@ -34,8 +39,8 @@ g++ -std=c++17 -O2 -static -Isrc $SRCS tools/cli_main.cpp build/resource.o \
 
 echo "== 编译 GUI =="
 windres resources/gui_resource.rc -O coff -o build/gui_resource.o
-g++ -std=c++17 -O2 -static -Isrc src/gui/gopt_gui.cpp $SRCS build/gui_resource.o \
-    -o build/gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 -lshell32 -lpsapi \
+g++ -std=c++17 -O2 -static -Isrc src/gui/gopt_gui.cpp $UISRCS $SRCS build/gui_resource.o \
+    -o build/gopt_gui.exe -mwindows -luser32 -lgdi32 -lcomdlg32 -lcomctl32 -lshell32 -lpsapi \
     -ldxgi -ladvapi32 -lpowrprof
 
 echo "== 编译 自检程序 =="

@@ -1,4 +1,4 @@
-// GameOptimizer GUI 端到端驱动测试（真实进程 + 真实 GUI 按钮）
+﻿// GameOptimizer GUI 端到端驱动测试（真实进程 + 真实 GUI 按钮）
 // 流程：造假 cs2.exe -> 启动 GUI -> 选 CS2 -> 应用优化 -> 验证优先级/亲和性 -> 回滚 -> 验证恢复
 Add-Type -TypeDefinition @"
 using System;

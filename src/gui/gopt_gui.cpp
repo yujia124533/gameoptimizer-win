@@ -1,151 +1,142 @@
-// GameOptimizer 原生 GUI（v2 重构版：多面板现代布局，参考 Wise365 / Process Lasso / BoosterX）
-// 布局：顶部标题栏 · 左侧导航(总览/游戏优化/系统调优/进程/启动项) · 内容区 · 底部日志 + 状态栏
+// GameOptimizer 原生 GUI（v1.1.0 外壳）
+// -----------------------------------------------------------------------------
+// 结构：外壳只负责 DPI/主题、导航与切页、日志与状态栏、托盘、流程反馈面板，
+// 并把宿主能力（AppCore/HAL/SystemTuner/StartupManager）通过 hooks 注入页面；
+// 五个页面各自成模块：page_dashboard / page_game（页面组 A，C 接口）
+//                   page_tune / page_process / page_startup（页面组 B，类接口）
+// 红线：仅官方 Win32 API；无注入、无内核 Hook；优先级上限 HIGH；一切可回滚。
 #include <windows.h>
-#include <commdlg.h>
 #include <shellapi.h>
 #include <psapi.h>
 
-#include <algorithm>
-#include <cstdio>
-#include <map>
-#include <string>
-#include <thread>
-#include <tuple>
-#include <vector>
 #include <cmath>
+#include <functional>
+#include <string>
+#include <vector>
 
-#include "config/GameConfig.h"
 #include "core/AppCore.h"
+#include "gui/page_dashboard.h"
+#include "gui/page_game.h"
+#include "gui/page_process.h"
+#include "gui/page_startup.h"
+#include "gui/page_tune.h"
+#include "gui/ui_theme.h"
+#include "gui/ui_widgets.h"
 #include "hal/HAL.h"
 #include "i18n.h"
-#include "license/License.h"
 #include "tuning/StartupManager.h"
 #include "tuning/SystemTuner.h"
 #include "version.h"
 
 using gopt::AppConfig;
 using gopt::AppCore;
-using gopt::GameConfig;
-using gopt::GameId;
-using gopt::GameLaunchConfig;
 using gopt::Lang;
-using gopt::StartupManager;
 using gopt::SetLang;
+using gopt::StartupManager;
 using gopt::SystemTuner;
 using gopt::T;
 
-// ---------- 控件 / 常量 ----------
-static AppCore* g_core = nullptr;
-static HWND g_hwnd = nullptr, g_footer = nullptr, g_log = nullptr;
-static HWND g_lang = nullptr;
-static HWND g_pages[5] = {};
-static WNDPROC g_pageProcOld[5] = {};                  // 页容器(STATIC)原过程：转发 WM_COMMAND 后链式调用
-static HWND g_nav[5] = {};
-static HWND g_bigOpt = nullptr;                        // 总览：一键优化大按钮
-static HWND g_autoStart = nullptr;                     // 总览：开机自启动
-static HWND g_btnAbout = nullptr;                      // 总览：诊断 / 关于
-// 游戏优化页
-static HWND g_combo, g_path, g_args, g_power, g_btnSave, g_btnBrowse, g_btnApply, g_btnRollback;
-// 系统调优页
-static HWND g_btnTuneHigh, g_btnTuneBal, g_btnTuneRestore, g_btnClean;
-// 进程页
-static HWND g_listProc, g_btnProcRefresh, g_btnProcHigh, g_btnProcNorm;
-// 启动项页
-static HWND g_listStartup, g_btnStartupRefresh, g_btnStartupDisable, g_btnStartupEnable, g_btnStartupRestore;
-// 总览卡片
-static HWND g_dashHelp, g_dashCpu, g_dashGpu, g_dashRam, g_dashNote;
-// 每页操作提示
-static HWND g_hint1, g_hint2, g_hint3, g_hint4;
-// 科技感优化流程覆盖面板（SS_OWNERDRAW，默认隐藏）
-static HWND g_flowPanel = nullptr;
+namespace ui = gopt::ui;
 
-static int g_page = 0;
-static HFONT g_font = nullptr, g_fontBold = nullptr, g_fontBig = nullptr;
-static HBRUSH g_whiteBrush = nullptr;
-static double g_progress = 0.0;
-static int g_pendingStart = 0, g_pendingLen = 0;
-static std::vector<gopt::StartupEntry> g_startups;
-static std::vector<std::pair<GameId, uint32_t>> g_procs;
-// 实时 CPU 负载（GetSystemTimes 1 秒定时采样，用于总览页卡片）
-static ULARGE_INTEGER g_cpuIdlePrev = {}, g_cpuKernelPrev = {}, g_cpuUserPrev = {};
-static bool g_cpuPrevValid = false;
-static std::string g_cpuBase;
-static std::string g_ramBase;
-// 科技感优化流程面板状态（一键优化 / 应用优化时显示）
-struct FlowStepUI {
-    std::string label;
-    bool ok = false, fail = false;
-    int elapsedMs = 0;
-};
-static std::vector<FlowStepUI> g_flowSteps;
-static bool g_flowActive = false;
-static bool g_flowHasFail = false;
-static int g_flowAngle = 0;
-// 系统托盘（Shell_NotifyIcon 稳定 API）：关闭最小化到托盘 + 气泡通知 + 右键菜单
-#define WM_TRAY (WM_APP + 3)
-static NOTIFYICONDATAW g_tray = {};
-static bool g_trayAdded = false;
-static bool g_trayBalloonShown = false;
-// 进程页每进程 CPU%（GetProcessTimes 稳定 API；pid -> (累计CPU tick, 采样时刻ms)）
-static std::map<uint32_t, std::pair<ULONGLONG, ULONGLONG>> g_procCpuPrev;
-// 总览页 CPU/内存 48 秒历史曲线（纯 GDI；每秒采样）
-static float g_cpuHist[48] = {};
-static float g_ramHist[48] = {};
-static int g_histPos = 0, g_histCount = 0;
-static HWND g_spark = nullptr;
-
+// ---------- 外壳自有控件 ID（页面控件 ID 由页面模块自管，外壳不得处理） ----------
 enum {
-    IDT_LIVE = 101,
     IDT_FLOW = 102,
     IDC_LANG = 106,
     IDC_NAV0 = 201, IDC_NAV1 = 202, IDC_NAV2 = 203, IDC_NAV3 = 204, IDC_NAV4 = 205,
-    IDC_BIGOPT = 301,
-    IDC_COMBO = 302, IDC_PATH = 303, IDC_BROWSE = 304, IDC_ARGS = 305, IDC_SAVE = 306,
-    IDC_POWERCHK = 307, IDC_APPLY = 308, IDC_ROLLBACK = 309, IDC_AUTOSTART = 310,
-    IDC_ABOUT = 311,
-    IDC_TUNE_HIGH = 401, IDC_TUNE_BAL = 402, IDC_TUNE_RESTORE = 403, IDC_CLEAN = 404,
-    IDC_PROCLIST = 501, IDC_PROC_REFRESH = 502, IDC_PROC_HIGH = 503, IDC_PROC_NORM = 504,
-    IDC_STARTUP_LIST = 601, IDC_STARTUP_REFRESH = 602, IDC_STARTUP_DISABLE = 603,
-    IDC_STARTUP_ENABLE = 604, IDC_STARTUP_RESTORE = 605,
     ID_FLOWPANEL = 700,
-    IDC_SPARK = 701,
+    WM_TRAY = WM_APP + 3,
 };
 
-#define WM_APP_UIEVENT (WM_APP + 1)
-#define WM_APP_FINISH  (WM_APP + 2)
-struct PendingFlow { gopt::AppCore::FlowEvent e; };
+// ---------- 状态 ----------
+static AppCore* g_core = nullptr;
+static AppConfig g_cfg;
+static HWND g_hwnd = nullptr, g_log = nullptr, g_footer = nullptr, g_lang = nullptr;
+static HWND g_pages[5] = {};
+static HWND g_nav[5] = {};
+static HWND g_pageTune = nullptr, g_pageProcess = nullptr, g_pageStartup = nullptr;
+static int g_page = 0;
+static HFONT g_font = nullptr;
+static HBRUSH g_brushPanel = nullptr;
 
-// ---------- 工具 ----------
+static NOTIFYICONDATAW g_tray = {};
+static bool g_trayAdded = false, g_trayBalloonShown = false;
+
+// 流程反馈面板（由页面日志驱动，不依赖页面日志的具体格式）
+struct FlowLineUI {
+    std::string text;
+    int tone = 0;  // 0=进行中 1=成功 2=失败
+};
+static std::vector<FlowLineUI> g_flowLines;
+static HWND g_flowPanel = nullptr;
+static bool g_flowActive = false, g_flowHasFail = false;
+static int g_flowAngle = 0;
+static ULONGLONG g_flowLastTick = 0;
+
+// ---------- 小工具 ----------
 static std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
+    if (s.empty()) return std::wstring();
     const int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    if (len <= 1) return {};
+    if (len <= 1) return std::wstring();
     std::wstring w(static_cast<size_t>(len) - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], len);
     return w;
 }
 
-static std::string WideToUtf8(HWND h) {
-    wchar_t buf[MAX_PATH] = {};
-    GetWindowTextW(h, buf, MAX_PATH);
-    const int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 1) return {};
-    std::string s(static_cast<size_t>(len) - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, buf, -1, &s[0], len, nullptr, nullptr);
-    return s;
+static bool Contains(const std::string& hay, const char* needle) {
+    return hay.find(needle) != std::string::npos;
 }
 
-// 双语标签表：语言切换时统一刷新
-static std::vector<std::tuple<HWND, std::string, std::string>> g_labels;
-static void Label(HWND h, const char* zh, const char* en) {
-    g_labels.emplace_back(h, zh, en);
-    SetWindowTextW(h, Utf8ToWide(T(zh, en)).c_str());
+static void AddLog(const std::string& s);
+
+// ---------- 流程面板 ----------
+static void FlowPanelSync() {
+    if (g_flowPanel == nullptr) return;
+    ShowWindow(g_flowPanel, g_flowActive ? SW_SHOW : SW_HIDE);
+    if (g_flowActive) InvalidateRect(g_flowPanel, nullptr, FALSE);
 }
-static void ApplyAllLabels() {
-    for (auto& [h, zh, en] : g_labels) SetWindowTextW(h, Utf8ToWide(T(zh.c_str(), en.c_str())).c_str());
+
+static void FlowBegin() {
+    g_flowLines.clear();
+    g_flowHasFail = false;
+    g_flowActive = true;
+    g_flowLastTick = GetTickCount64();
+    FlowPanelSync();
+}
+
+static void FlowEnd() {
+    if (!g_flowActive) return;
+    g_flowActive = false;
+    FlowPanelSync();
+}
+
+static void FlowObserve(const std::string& line) {
+    std::string t = line;
+    while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back();
+    while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
+    if (t.empty()) return;
+    if (t.rfind("==", 0) == 0) {
+        if (Contains(t, "完成") || Contains(t, "done")) { FlowEnd(); return; }
+        if (Contains(t, "优化") || Contains(t, "Optimiz") || Contains(t, "回滚") || Contains(t, "Rollback") ||
+            Contains(t, "清理") || Contains(t, "Clean") || Contains(t, "调优") || Contains(t, "Tune")) {
+            FlowBegin();
+            return;
+        }
+    }
+    if (!g_flowActive) return;
+    FlowLineUI row;
+    row.text = t;
+    if (Contains(t, "失败") || Contains(t, "FAIL") || Contains(t, "✗")) row.tone = 2;
+    else if (Contains(t, "成功") || Contains(t, "OK") || Contains(t, "✓") || Contains(t, "完成")) row.tone = 1;
+    if (row.tone == 2) g_flowHasFail = true;
+    g_flowLines.push_back(row);
+    if (g_flowLines.size() > 8) g_flowLines.erase(g_flowLines.begin());
+    g_flowLastTick = GetTickCount64();
+    if (g_flowPanel != nullptr) InvalidateRect(g_flowPanel, nullptr, FALSE);
 }
 
 static void AddLog(const std::string& s) {
+    if (g_log == nullptr) return;
+    FlowObserve(s);
     const std::wstring w = Utf8ToWide(s);
     const int len = GetWindowTextLengthW(g_log);
     SendMessageW(g_log, EM_SETSEL, len, len);
@@ -153,346 +144,132 @@ static void AddLog(const std::string& s) {
     SendMessageW(g_log, EM_SCROLLCARET, 0, 0);
 }
 
-static void RenderFlowEvent(const gopt::AppCore::FlowEvent& e) {
-    switch (e.kind) {
-        case gopt::AppCore::FlowEvent::Info:
-            AddLog(e.text + "\n");
-            break;
-        case gopt::AppCore::FlowEvent::StepStart: {
-            const int start = GetWindowTextLengthW(g_log);
-            g_pendingStart = start;
-            AddLog("  " + std::to_string(e.step) + ") " + e.text + ": "
-                   + T("处理中...", "running...") + "\n");
-            g_pendingLen = GetWindowTextLengthW(g_log) - start;
-            // 流程面板登记步骤
-            if (e.step == 1) { g_flowSteps.clear(); g_flowHasFail = false; }
-            if (static_cast<int>(g_flowSteps.size()) < e.step) g_flowSteps.resize(e.step);
-            g_flowSteps[e.step - 1].label = e.text;
-            g_flowActive = true;
-            if (g_flowPanel != nullptr) {
-                ShowWindow(g_flowPanel, SW_SHOW);
-                InvalidateRect(g_flowPanel, nullptr, FALSE);
-            }
-            if (g_hwnd != nullptr) SetTimer(g_hwnd, IDT_FLOW, 80, nullptr);
-            break;
-        }
-        case gopt::AppCore::FlowEvent::StepOk:
-        case gopt::AppCore::FlowEvent::StepFail: {
-            const std::string line = "  " + std::to_string(e.step) + ") " + e.text + ": "
-                + (e.kind == gopt::AppCore::FlowEvent::StepOk ? T("成功 ✓", "OK ✓") : T("失败 ✗", "FAIL ✗"))
-                + "（" + std::to_string(e.elapsedMs) + " ms）\n";
-            SendMessageW(g_log, EM_SETSEL, g_pendingStart, g_pendingStart + g_pendingLen);
-            SendMessageW(g_log, EM_REPLACESEL, FALSE,
-                         reinterpret_cast<LPARAM>(Utf8ToWide(line).c_str()));
-            if (e.step - 1 >= 0 && e.step - 1 < static_cast<int>(g_flowSteps.size())) {
-                FlowStepUI& s = g_flowSteps[e.step - 1];
-                s.ok = (e.kind == gopt::AppCore::FlowEvent::StepOk);
-                s.fail = (e.kind == gopt::AppCore::FlowEvent::StepFail);
-                s.elapsedMs = e.elapsedMs;
-                if (s.fail) g_flowHasFail = true;
-            }
-            break;
-        }
-    }
-    if (e.total > 0) g_progress = static_cast<double>(e.step) / static_cast<double>(e.total);
-    if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
+static void SetFooterStatus(const char* utf8) {
+    if (g_footer == nullptr || utf8 == nullptr) return;
+    SetWindowTextW(g_footer, Utf8ToWide(std::string(utf8)).c_str());
 }
 
-static void UpdateFooter() {
-    if (!g_footer || !g_core) return;
-    const gopt::HardwareProfile p = g_core->Profile();
-    GUID scheme{};
-    std::string power = "?";
-    if (gopt::HAL::QueryActivePowerScheme(&scheme)) power = gopt::HAL::PowerSchemeName(scheme);
-    const std::string txt = std::string(T("全部免费", "Free")) + " · " + T("内存", "RAM") + " "
-        + std::to_string(p.availableRamMB / 1024) + "/" + std::to_string(p.systemRamMB / 1024)
-        + " GB · " + T("电源", "Power") + " " + power
-        + " · " + (gopt::HAL::IsElevated()
-                       ? T("已提权", "Elevated")
-                       : T("未提权（部分功能需管理员）", "Not elevated (some features need admin)"))
-        + (g_procs.empty() ? "" : (std::string(" · ") + T("运行中", "Running") + " " + std::to_string(g_procs.size())));
-    SetWindowTextW(g_footer, Utf8ToWide(txt).c_str());
+// ---------- 宿主能力 → 页面 hooks ----------
+static ui::PageHostHooks MakePageHostHooks() {
+    ui::PageHostHooks h;
+    h.sharedCore = g_core;
+    h.AppendLog = [](const char* s) { if (s != nullptr) AddLog(std::string(s)); };
+    h.SetStatus = [](const char* s) { SetFooterStatus(s); };
+    return h;
 }
 
-// ---------- 页面逻辑 ----------
-static GameId CurrentGame() {
-    const int idx = static_cast<int>(SendMessageW(g_combo, CB_GETCURSEL, 0, 0));
-    static const GameId kGames[] = {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,
-                                    GameId::PUBG, GameId::Valorant, GameId::Apex,
-                                    GameId::Dota2, GameId::Overwatch2};
-    if (idx < 0 || idx >= 8) return GameId::DeltaForce;
-    return kGames[idx];
-}
-
-static void LoadGameConfigToUI() {
-    const GameLaunchConfig gc = GameConfig::Get(CurrentGame());
-    SetWindowTextW(g_path, Utf8ToWide(gc.exePath).c_str());
-    SetWindowTextW(g_args, Utf8ToWide(gc.args).c_str());
-    SendMessageW(g_power, BM_SETCHECK, gc.powerScheme ? BST_CHECKED : BST_UNCHECKED, 0);
-}
-
-static void RefreshGameList() {
-    SendMessageW(g_combo, CB_RESETCONTENT, 0, 0);
-    const GameId kGames[] = {GameId::DeltaForce, GameId::LeagueOfLegends, GameId::CS2,
-                             GameId::PUBG, GameId::Valorant, GameId::Apex,
-                             GameId::Dota2, GameId::Overwatch2};
-    for (const GameId id : kGames)
-        SendMessageW(g_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(Utf8ToWide(gopt::GameIdToString(id)).c_str()));
-    SendMessageW(g_combo, CB_SETCURSEL, 0, 0);
-    LoadGameConfigToUI();
-}
-
-static AppCore* MakeCore() {
-    AppConfig cfg;
-    cfg.gameExeOverride = WideToUtf8(g_path);
-    cfg.allowPowerSchemeSwitch = SendMessageW(g_power, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    return new AppCore(cfg);
-}
-
-static void BrowsePath() {
-    OPENFILENAMEW ofn{};
-    wchar_t file[MAX_PATH] = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = g_hwnd;
-    ofn.lpstrFilter = L"*.exe\0*.exe\0*.*\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (GetOpenFileNameW(&ofn)) SetWindowTextW(g_path, file);
-}
-
-static void SaveCurrentGameConfig() {
-    GameLaunchConfig gc = GameConfig::Get(CurrentGame());
-    gc.exePath = WideToUtf8(g_path);
-    gc.args = WideToUtf8(g_args);
-    gc.powerScheme = SendMessageW(g_power, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    GameConfig::Set(CurrentGame(), gc);
-    AddLog(std::string(T("已保存 ", "Saved ")) + gopt::GameIdToString(CurrentGame())
-           + T(" 的优化启动配置。\n\n", " launch config.\n\n"));
-}
-
-static void UpdateGameHint() {
-    if (!g_hint1 || !g_core) return;
-    const GameId sel = CurrentGame();
-    const gopt::GamePreset p = g_core->ResolvedPreset(sel);
-    std::string txt = std::string(T("玩法：路径留空 → 优化正在运行的游戏；填写该游戏 exe 路径并「保存游戏设置」→「应用优化」会先代启动并自动优化。\n",
-                                    "Tip: leave path empty to optimize a running game; set the exe path + Save, then Apply will launch and optimize it.\n"))
-        + std::string(T("当前游戏: ", "Selected: ")) + gopt::GameIdToString(sel) + " — " + p.description;
-    // 已保存的启动配置摘要（GameConfig 持久化）
-    const GameLaunchConfig gc = GameConfig::Get(sel);
-    if (gc.exePath.empty()) {
-        txt += std::string("\n") + T("启动配置：未设置（默认优化运行中的游戏）", "Launch config: unset (optimize running game by default)");
-    } else {
-        txt += std::string("\n") + T("启动配置：", "Launch config: ") + gc.exePath
-             + (gc.args.empty() ? "" : (" " + gc.args))
-             + (gc.powerScheme ? T("  [电源:开]", "  [power:on]") : "");
-    }
-    SetWindowTextW(g_hint1, Utf8ToWide(txt).c_str());
-}
-
-static void RefreshCpuLoad() {
-    if (!g_dashCpu) return;
-    FILETIME idleFt{}, kernelFt{}, userFt{};
-    if (!GetSystemTimes(&idleFt, &kernelFt, &userFt)) return;
-    ULARGE_INTEGER idle{}, kernel{}, user{};
-    idle.HighPart = idleFt.dwHighDateTime; idle.LowPart = idleFt.dwLowDateTime;
-    kernel.HighPart = kernelFt.dwHighDateTime; kernel.LowPart = kernelFt.dwLowDateTime;
-    user.HighPart = userFt.dwHighDateTime; user.LowPart = userFt.dwLowDateTime;
-    std::string pct = "--%";
-    if (g_cpuPrevValid) {
-        const ULONGLONG dI = idle.QuadPart - g_cpuIdlePrev.QuadPart;
-        const ULONGLONG dK = kernel.QuadPart - g_cpuKernelPrev.QuadPart;
-        const ULONGLONG dU = user.QuadPart - g_cpuUserPrev.QuadPart;
-        const ULONGLONG total = dK + dU;
-        if (total > 0) pct = std::to_string(static_cast<int>((total - dI) * 100 / total)) + "%";
-    }
-    g_cpuIdlePrev = idle; g_cpuKernelPrev = kernel; g_cpuUserPrev = user;
-    g_cpuPrevValid = true;
-    SetWindowTextW(g_dashCpu, Utf8ToWide(g_cpuBase + "  [" + std::string(T("当前负载", "load")) + ": " + pct + "]").c_str());
-    // RAM 卡片实时刷新（GlobalMemoryStatusEx 稳定 API）
-    if (g_dashRam) {
-        MEMORYSTATUSEX ms{};
-        ms.dwLength = sizeof(ms);
-        if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys > 0) {
-            const int ramPct = static_cast<int>((ms.ullTotalPhys - ms.ullAvailPhys) * 100 / ms.ullTotalPhys);
-            SetWindowTextW(g_dashRam, Utf8ToWide(g_ramBase + "  [" + std::string(T("当前占用", "used"))
-                                                 + ": " + std::to_string(ramPct) + "%]").c_str());
-            // 历史曲线采样
-            const int cpuPct = pct.empty() || pct == "--%" ? 0 : std::atoi(pct.c_str());
-            g_cpuHist[g_histPos] = static_cast<float>(cpuPct);
-            g_ramHist[g_histPos] = static_cast<float>(ramPct);
-            g_histPos = (g_histPos + 1) % 48;
-            if (g_histCount < 48) ++g_histCount;
-            if (g_spark != nullptr) InvalidateRect(g_spark, nullptr, FALSE);
-        }
-    }
-}
-
-static void RefreshProcList() {
-    // 选中项按 pid 记录：列表显示的是上一轮顺序，且本轮会按 CPU% 重排（索引会变），
-    // 因此必须在重新枚举前读取选中行，并只能用 pid 做恢复映射。
-    const int selBefore = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
-    uint32_t pidBefore = 0;
-    if (selBefore >= 0 && selBefore < static_cast<int>(g_procs.size())) pidBefore = g_procs[selBefore].second;
-
-    g_procs = g_core->RunningGames();
-    const ULONGLONG nowMs = GetTickCount64();
-    int cores = g_core->Profile().logicalCores;
-    if (cores < 1) cores = 1;
-
-    // 先采集每进程指标与显示文本，再按 CPU% 降序排序（stable：无采样/相同负载保持原枚举顺序）
-    struct ProcRow {
-        GameId id = GameId::DeltaForce;
-        uint32_t pid = 0;
-        double cpuPct = 0.0;   // 无采样数据时为 0，仅参与排序
-        std::string text;
+static ui::PageTune::Hooks MakeTuneHooks() {
+    ui::PageTune::Hooks h;
+    h.recommendHighPerf = []() { return g_core != nullptr && SystemTuner::RecommendHighPerf(g_core->Profile()); };
+    h.activePowerSchemeName = []() {
+        GUID scheme{};
+        if (gopt::HAL::QueryActivePowerScheme(&scheme)) return gopt::HAL::PowerSchemeName(scheme);
+        return std::string("?");
     };
-    std::vector<ProcRow> rows;
-    for (const auto& [id, pid] : g_procs) {
-        DWORD pri = 0;
-        ULONGLONG cpuTicks = 0;
-        DWORD memMB = 0;
-        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    h.isElevated = []() { return gopt::HAL::IsElevated(); };
+    h.tune = [](bool highPerf) { AppCore core(g_cfg); return core.TuneSystem(highPerf); };
+    h.restoreTune = []() { AppCore core(g_cfg); return core.RestoreTune(); };
+    h.cleanTemp = []() { return SystemTuner::CleanTemp(); };
+    h.receipt = [](const std::string& s) { AddLog(s + "\n"); };
+    return h;
+}
+
+static ui::PageProcess::ProcSnapshot CollectProcSnapshot() {
+    ui::PageProcess::ProcSnapshot snap;
+    snap.logicalCores = (g_core != nullptr) ? g_core->Profile().logicalCores : 1;
+    if (snap.logicalCores < 1) snap.logicalCores = 1;
+    if (g_core == nullptr) return snap;
+    for (const auto& entry : g_core->RunningGames()) {
+        ui::PageProcess::ProcSample s;
+        s.name = gopt::GameIdToString(entry.first);
+        s.pid = entry.second;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, s.pid);
         if (h != nullptr) {
-            pri = GetPriorityClass(h);
+            s.accessible = true;
+            s.priorityClass = GetPriorityClass(h);
             FILETIME c{}, e{}, k{}, u{};
             if (GetProcessTimes(h, &c, &e, &k, &u)) {
                 ULARGE_INTEGER kk{}, uu{};
                 kk.HighPart = k.dwHighDateTime; kk.LowPart = k.dwLowDateTime;
                 uu.HighPart = u.dwHighDateTime; uu.LowPart = u.dwLowDateTime;
-                cpuTicks = kk.QuadPart + uu.QuadPart;
+                s.cpuTicks = kk.QuadPart + uu.QuadPart;
             }
             PROCESS_MEMORY_COUNTERS pmc{};
             pmc.cb = sizeof(pmc);
-            if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) {
-                memMB = static_cast<DWORD>(pmc.WorkingSetSize / (1024ull * 1024ull));
-            }
+            if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc))) s.memBytes = pmc.WorkingSetSize;
             CloseHandle(h);
         }
-        const char* priName = pri == HIGH_PRIORITY_CLASS ? T("高", "High")
-                           : pri == ABOVE_NORMAL_PRIORITY_CLASS ? T("高于正常", "AboveNormal")
-                           : pri == BELOW_NORMAL_PRIORITY_CLASS ? T("低于正常", "BelowNormal")
-                           : pri == IDLE_PRIORITY_CLASS ? T("空闲", "Idle")
-                           : T("正常", "Normal");
-        // 用 GetProcessTimes 差值计算每进程 CPU%（相对上次采样；稳定官方 API）
-        double cpuPct = 0.0;
-        char cpuBuf[24] = {};
-        auto it = g_procCpuPrev.find(pid);
-        if (it != g_procCpuPrev.end()) {
-            const ULONGLONG dTicks = cpuTicks - it->second.first;
-            const ULONGLONG dMs = nowMs - it->second.second;
-            if (dMs > 50) {
-                cpuPct = 100.0 * static_cast<double>(dTicks) / (static_cast<double>(dMs) * 10000.0 * cores);
-                std::snprintf(cpuBuf, sizeof(cpuBuf), "  [CPU: %.1f%%]", cpuPct);
-            }
-        }
-        g_procCpuPrev[pid] = {cpuTicks, nowMs};
-        char memBuf[24] = {};
-        if (memMB > 0)
-            std::snprintf(memBuf, sizeof(memBuf), "  [%s: %u MB]", T("内存", "RAM"), memMB);
-        ProcRow row;
-        row.id = id;
-        row.pid = pid;
-        row.cpuPct = cpuPct;
-        row.text = gopt::GameIdToString(id) + "  (pid " + std::to_string(pid) + ")  ["
-                 + T("优先级", "Prio") + ": " + priName + "]" + cpuBuf + memBuf;
-        rows.push_back(row);
+        snap.items.push_back(s);
     }
-    // 清理已退出的进程采样缓存
-    for (auto it = g_procCpuPrev.begin(); it != g_procCpuPrev.end();) {
-        bool alive = false;
-        for (const auto& p : g_procs) if (p.second == it->first) { alive = true; break; }
-        if (!alive) it = g_procCpuPrev.erase(it);
-        else ++it;
-    }
-    // 按 CPU% 降序排序（std::stable_sort 保证相同值/无采样时维持游戏枚举顺序）
-    std::stable_sort(rows.begin(), rows.end(),
-                     [](const ProcRow& a, const ProcRow& b) { return a.cpuPct > b.cpuPct; });
-    // g_procs 与列表行顺序保持一致（按钮与双击都按列表索引取 pid）
-    g_procs.clear();
-    for (const ProcRow& r : rows) g_procs.emplace_back(r.id, r.pid);
-
-    SendMessageW(g_listProc, LB_RESETCONTENT, 0, 0);
-    if (rows.empty()) {
-        SendMessageW(g_listProc, LB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(Utf8ToWide(T("（没有运行中的支持游戏）", "(no supported games running)")).c_str()));
-    } else {
-        for (const ProcRow& r : rows)
-            SendMessageW(g_listProc, LB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(Utf8ToWide(r.text).c_str()));
-        // 按 pid 恢复选中；原 pid 已退出时回退到第一行（保持原有“总有一行被选中”的行为）
-        int restore = 0;
-        for (size_t i = 0; i < rows.size(); ++i) {
-            if (rows[i].pid == pidBefore) { restore = static_cast<int>(i); break; }
-        }
-        SendMessageW(g_listProc, LB_SETCURSEL, restore, 0);
-    }
-    UpdateFooter();
+    return snap;
 }
 
-// 进程页：修改选中进程优先级（按钮与列表双击共用；官方 API，上限 HIGH，不使用 REALTIME）
-static void ApplyProcPriority(bool high) {
-    const int sel = static_cast<int>(SendMessageW(g_listProc, LB_GETCURSEL, 0, 0));
-    if (sel < 0 || sel >= static_cast<int>(g_procs.size()) || g_procs.empty()) {
-        AddLog(std::string(T("请先在列表中选择一个游戏进程。\n\n",
-                             "Select a game process first.\n\n")));
-        return;
-    }
-    const uint32_t pid = g_procs[sel].second;
-    const DWORD cls = high ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS;
+static ui::PageProcess::OpResult SetProcPriority(uint32_t pid, bool high) {
+    ui::PageProcess::OpResult r;
     HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (h == nullptr) {
-        AddLog(std::string(T("无法打开进程（可能已退出或无权限）。\n\n",
-                             "Cannot open process (exited or no access).\n\n")));
-        return;
+        r.ok = false;
+        r.text = T("无法打开进程（可能已退出或无权限）。", "Cannot open process (exited or no access).");
+        return r;
     }
-    const bool ok = gopt::HAL::SetProcessPriority(h, cls);
+    r.ok = gopt::HAL::SetProcessPriority(h, high ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
     CloseHandle(h);
-    AddLog(std::string(T("进程 ", "Process ")) + std::to_string(pid) + " -> "
-           + (high ? T("高优先级", "High priority") : T("正常优先级", "Normal priority"))
-           + ": " + (ok ? "OK" : "FAIL") + "\n\n");
-    RefreshProcList();
+    r.text = std::string(T("进程 ", "process ")) + std::to_string(pid) + " -> " +
+             (high ? T("高优先级", "High priority") : T("正常优先级", "Normal priority")) + (r.ok ? "  OK" : "  FAIL");
+    return r;
 }
 
-static void RefreshStartupList() {
-    g_startups = StartupManager::List();
-    SendMessageW(g_listStartup, LB_RESETCONTENT, 0, 0);
-    if (g_startups.empty()) {
-        SendMessageW(g_listStartup, LB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(Utf8ToWide(T("（没有启动项）", "(no startup entries)")).c_str()));
-    } else {
-        for (const auto& e : g_startups)
-            SendMessageW(g_listStartup, LB_ADDSTRING, 0,
-                         reinterpret_cast<LPARAM>(Utf8ToWide("[" + e.hive + "] " + e.name).c_str()));
+static ui::PageProcess::Hooks MakeProcessHooks() {
+    ui::PageProcess::Hooks h;
+    h.snapshot = []() { return CollectProcSnapshot(); };
+    h.setPriority = [](uint32_t pid, bool high) { return SetProcPriority(pid, high); };
+    h.receipt = [](const std::string& s) { AddLog(s + "\n"); };
+    return h;
+}
+
+static std::vector<ui::PageStartup::StartupRowInfo> ListStartupRows() {
+    std::vector<ui::PageStartup::StartupRowInfo> out;
+    for (const auto& e : StartupManager::List()) {
+        ui::PageStartup::StartupRowInfo r;
+        r.hive = e.hive;
+        r.name = e.name;
+        r.value = e.value;
+        r.disabled = e.name.rfind("[disabled] ", 0) == 0;
+        out.push_back(r);
     }
-    SendMessageW(g_listStartup, LB_SETCURSEL, 0, 0);
+    return out;
 }
 
-static void UpdateDashboard() {
-    if (!g_core || !g_dashCpu) return;
-    const gopt::HardwareProfile p = g_core->Profile();
-    g_cpuBase = "CPU: " + p.cpuModel + "（" + std::to_string(p.physicalCores)
-        + " " + T("物理核", "cores") + " / " + std::to_string(p.logicalCores) + " "
-        + T("逻辑", "threads") + " @ " + std::to_string(p.cpuBaseFreqMHz) + " MHz）";
-    g_ramBase = "RAM: " + std::to_string(p.systemRamMB / 1024) + " GB（" + T("可用", "free")
-        + " " + std::to_string(p.availableRamMB / 1024) + " GB）";
-    RefreshCpuLoad();
-    SetWindowTextW(g_dashGpu, Utf8ToWide("GPU: " + p.gpuVendor + " " + p.gpuModel + "（"
-        + std::to_string(p.vramMB / 1024) + " GB，Driver " + p.gpuDriverVersion + "）").c_str());
-    SetWindowTextW(g_dashRam, Utf8ToWide("RAM: " + std::to_string(p.systemRamMB / 1024)
-        + " GB（" + T("可用", "free") + " " + std::to_string(p.availableRamMB / 1024) + " GB）").c_str());
-    UpdateFooter();
+static ui::PageStartup::Hooks MakeStartupHooks() {
+    ui::PageStartup::Hooks h;
+    h.list = []() { return ListStartupRows(); };
+    h.disable = [](const std::string& name) {
+        ui::PageStartup::OpResult r;
+        r.ok = StartupManager::Disable(name);
+        r.affected = r.ok ? 1 : 0;
+        r.text = std::string(r.ok ? "OK  " : "FAIL  ") + name;
+        return r;
+    };
+    h.enable = [](const std::string& name) {
+        ui::PageStartup::OpResult r;
+        r.ok = StartupManager::Enable(name);
+        r.affected = r.ok ? 1 : 0;
+        r.text = std::string(r.ok ? "OK  " : "FAIL  ") + name;
+        return r;
+    };
+    h.restoreAll = []() {
+        ui::PageStartup::OpResult r;
+        const int n = StartupManager::RestoreAll();
+        r.ok = n > 0;
+        r.affected = n;
+        r.text = std::string(T("已恢复 ", "Restored ")) + std::to_string(n) + T(" 个启动项", " entries");
+        return r;
+    };
+    h.receipt = [](const std::string& s) { AddLog(s + "\n"); };
+    return h;
 }
 
-static void ShowPage(int page) {
-    g_page = page;
-    for (int i = 0; i < 5; ++i)
-        if (g_pages[i] != nullptr) ShowWindow(g_pages[i], i == page ? SW_SHOW : SW_HIDE);
-    if (g_spark != nullptr) ShowWindow(g_spark, page == 0 ? SW_SHOW : SW_HIDE);
-    if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, TRUE);
-}
-
-// ---------- 系统托盘（Shell_NotifyIcon 稳定 API） ----------
+// ---------- 托盘 ----------
 static void TrayAdd() {
     if (g_trayAdded || g_hwnd == nullptr) return;
     ZeroMemory(&g_tray, sizeof(g_tray));
@@ -502,7 +279,7 @@ static void TrayAdd() {
     g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_tray.uCallbackMessage = WM_TRAY;
     HINSTANCE hi = GetModuleHandleW(nullptr);
-    g_tray.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(1));  // 应用图标（资源 1）
+    g_tray.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(1));
     if (g_tray.hIcon == nullptr) g_tray.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
     lstrcpynW(g_tray.szTip, L"GameOptimizer", 64);
     g_trayAdded = Shell_NotifyIconW(NIM_ADD, &g_tray) != FALSE;
@@ -522,7 +299,7 @@ static void TrayBalloon(const std::wstring& title, const std::wstring& msg) {
     lstrcpynW(g_tray.szInfoTitle, title.c_str(), 64);
     lstrcpynW(g_tray.szInfo, msg.c_str(), 256);
     Shell_NotifyIconW(NIM_MODIFY, &g_tray);
-    g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;  // 恢复供后续修改
+    g_tray.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
 static void ShowMainWindow(HWND hwnd) {
@@ -530,681 +307,375 @@ static void ShowMainWindow(HWND hwnd) {
     SetForegroundWindow(hwnd);
 }
 
-// ---------- 开机自启动（注册表 Run 键；稳定 API） ----------
-static bool AutoStartExists() {
-    DWORD cb = 0;
-    const LONG r = RegGetValueW(HKEY_CURRENT_USER,
-                                L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                                L"GameOptimizer", RRF_RT_REG_SZ, nullptr, nullptr, &cb);
-    return r == ERROR_SUCCESS;
+// ---------- 布局（全部按 DPI 缩放） ----------
+static void LayoutShell() {
+    if (g_hwnd == nullptr) return;
+    RECT rc{};
+    GetClientRect(g_hwnd, &rc);
+    const int pad = ui::UiScale(10);
+    const int headerH = ui::UiScale(48);
+    const int navW = ui::UiScale(190);
+    const int navItemH = ui::UiScale(40);
+    const int navGap = ui::UiScale(6);
+    const int footerH = ui::UiScale(22);
+    const int logH = ui::UiScale(120);
+    const int gap = ui::UiScale(8);
+
+    for (int i = 0; i < 5; ++i) {
+        if (g_nav[i] != nullptr)
+            MoveWindow(g_nav[i], pad, headerH + gap + i * (navItemH + navGap), navW - pad, navItemH, TRUE);
+    }
+    if (g_lang != nullptr)
+        MoveWindow(g_lang, rc.right - ui::UiScale(120), ui::UiScale(9), ui::UiScale(104), ui::UiScale(220), TRUE);
+
+    const int logTop = rc.bottom - footerH - logH - pad;
+    if (g_log != nullptr) MoveWindow(g_log, pad, logTop, rc.right - 2 * pad, logH, TRUE);
+    if (g_footer != nullptr) MoveWindow(g_footer, pad, rc.bottom - footerH, rc.right - 2 * pad, footerH, TRUE);
+
+    const int px = navW + gap;
+    const int py = headerH + gap;
+    const int pw = rc.right - px - pad;
+    const int ph = logTop - gap - py;
+    for (int i = 0; i < 5; ++i) {
+        if (g_pages[i] != nullptr)
+            MoveWindow(g_pages[i], px, py, pw > 0 ? pw : 0, ph > 0 ? ph : 0, TRUE);
+    }
+    if (g_flowPanel != nullptr)
+        MoveWindow(g_flowPanel, px, py, pw > 0 ? pw : 0, ph > 0 ? ph : 0, TRUE);
+
+    ui::DashboardPageLayout();
+    ui::GamePageLayout();
+    if (g_pageTune != nullptr) ui::PageTune::FillParent(g_pageTune);
+    if (g_pageProcess != nullptr) ui::PageProcess::FillParent(g_pageProcess);
+    if (g_pageStartup != nullptr) ui::PageStartup::FillParent(g_pageStartup);
+    InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 
-static void AutoStartSet(bool on) {
-    HKEY k = nullptr;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER,
-                        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                        0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) return;
-    if (on) {
-        wchar_t exe[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        const std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
-        RegSetValueExW(k, L"GameOptimizer", 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(cmd.c_str()),
-                       static_cast<DWORD>((cmd.size() + 1) * sizeof(wchar_t)));
-    } else {
-        RegDeleteValueW(k, L"GameOptimizer");
-    }
-    RegCloseKey(k);
+static void ShowPage(int page) {
+    g_page = page;
+    for (int i = 0; i < 5; ++i)
+        if (g_pages[i] != nullptr) ShowWindow(g_pages[i], i == page ? SW_SHOW : SW_HIDE);
+    if (g_pageTune != nullptr) ui::PageTune::Show(g_pageTune, page == 2);
+    if (g_pageProcess != nullptr) ui::PageProcess::Show(g_pageProcess, page == 3);
+    if (g_pageStartup != nullptr) ui::PageStartup::Show(g_pageStartup, page == 4);
+    if (page == 0) ui::DashboardPageOnShow();
+    if (page == 1) ui::GamePageOnShow();
+    for (int i = 0; i < 5; ++i)
+        if (g_nav[i] != nullptr) InvalidateRect(g_nav[i], nullptr, TRUE);
+    InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 
-// ---------- 上次优化时间（savepoints 文件时间戳；稳定文件 API） ----------
-static std::string LastOptimizeTime() {
-    wchar_t base[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", base, MAX_PATH) <= 0) {
-        return T("上次优化：未知", "Last optimized: unknown");
-    }
-    const std::wstring p = std::wstring(base) + L"\\GameOptimizer\\savepoints.txt";
-    WIN32_FILE_ATTRIBUTE_DATA fa{};
-    if (!GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &fa)) {
-        return T("上次优化：从未", "Last optimized: never");
-    }
-    SYSTEMTIME st{};
-    if (!FileTimeToSystemTime(&fa.ftLastWriteTime, &st)) {
-        return T("上次优化：未知", "Last optimized: unknown");
-    }
-    char buf[64] = {};
-    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u",
-                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
-    return std::string(T("上次优化：", "Last optimized: ")) + buf;
+static void ApplyLanguageAll() {
+    ui::DashboardPageApplyLanguage();
+    ui::GamePageApplyLanguage();
+    if (g_pageTune != nullptr) ui::PageTune::ApplyLabels(g_pageTune);
+    if (g_pageProcess != nullptr) ui::PageProcess::ApplyLabels(g_pageProcess);
+    if (g_pageStartup != nullptr) ui::PageStartup::ApplyLabels(g_pageStartup);
+    for (int i = 0; i < 5; ++i)
+        if (g_nav[i] != nullptr) InvalidateRect(g_nav[i], nullptr, TRUE);
+    InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 
-// ---------- 诊断 / 关于（只读信息汇总；MessageBoxW 稳定 API） ----------
-// 一行一项：版本 / CPU / GPU / 内存 / 提权 / 电源方案 / 上次优化 / 安全声明
-static void ShowDiagnosticsDialog() {
-    std::string txt;
-    txt += std::string("GameOptimizer v") + GOPT_VERSION_STR + "\n";
-    if (g_core != nullptr) {
-        const gopt::HardwareProfile p = g_core->Profile();
-        txt += std::string(T("CPU：", "CPU: ")) + p.cpuModel + "\n";
-        txt += std::string(T("物理核：", "Physical cores: ")) + std::to_string(p.physicalCores)
-             + T("  逻辑核：", "  Logical cores: ") + std::to_string(p.logicalCores) + "\n";
-        txt += std::string(T("GPU：", "GPU: ")) + p.gpuVendor + " " + p.gpuModel
-             + "（" + std::to_string(p.vramMB / 1024) + " GB / Driver " + p.gpuDriverVersion + "）\n";
-        txt += std::string(T("内存：", "RAM: ")) + std::to_string(p.systemRamMB / 1024) + " GB"
-             + T("（可用 ", " (free ") + std::to_string(p.availableRamMB / 1024) + " GB）\n";
-    }
-    txt += std::string(T("提权状态：", "Elevation: "))
-         + (gopt::HAL::IsElevated() ? T("已提权（管理员）", "elevated (admin)")
-                                    : T("未提权（部分功能需管理员）", "not elevated (some features need admin)"))
-         + "\n";
-    GUID scheme{};
-    std::string power = "<unknown>";  // 查询失败时的显式占位
-    if (gopt::HAL::QueryActivePowerScheme(&scheme)) power = gopt::HAL::PowerSchemeName(scheme);
-    txt += std::string(T("当前电源方案：", "Active power scheme: ")) + power + "\n";
-    txt += LastOptimizeTime() + "\n";
-    txt += std::string(T("安全声明：无注入 · 无内核 Hook · 优先级上限 HIGH · 支持回滚",
-                         "Safety: no injection, no kernel hooks, priority capped at HIGH, rollback supported"));
-    MessageBoxW(g_hwnd, Utf8ToWide(txt).c_str(),
-                Utf8ToWide(T("诊断 / 关于 - GameOptimizer", "Diagnostics / About - GameOptimizer")).c_str(),
-                MB_OK | MB_ICONINFORMATION);
+static void ApplyThemeAll() {
+    if (g_brushPanel != nullptr) DeleteObject(g_brushPanel);
+    g_brushPanel = CreateSolidBrush(ui::UiColor(ui::UiColorRole::WindowBg));
+    ui::DashboardPageApplyTheme();
+    ui::GamePageApplyTheme();
+    if (g_pageTune != nullptr) { ui::PageTune::ApplyLabels(g_pageTune); InvalidateRect(g_pageTune, nullptr, TRUE); }
+    if (g_pageProcess != nullptr) InvalidateRect(g_pageProcess, nullptr, TRUE);
+    if (g_pageStartup != nullptr) InvalidateRect(g_pageStartup, nullptr, TRUE);
+    if (g_flowPanel != nullptr) InvalidateRect(g_flowPanel, nullptr, TRUE);
+    if (g_log != nullptr) InvalidateRect(g_log, nullptr, TRUE);
+    if (g_footer != nullptr) InvalidateRect(g_footer, nullptr, TRUE);
+    InvalidateRect(g_hwnd, nullptr, TRUE);
 }
 
-// ---------- 页容器消息转发 ----------
-// 页容器是 STATIC：它不会把子控件的 WM_COMMAND 转发给主窗口，导致页内所有按钮/列表通知
-// （BN_CLICKED / LBN_DBLCLK 等）丢失。这里子类化页容器，仅转发 WM_COMMAND，其余消息
-// 链回原 STATIC 过程（保留原生背景绘制），避免视觉回归。
-static LRESULT CALLBACK PageProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == WM_COMMAND) return SendMessageW(GetParent(h), m, w, l);
-    int idx = -1;
-    for (int i = 0; i < 5; ++i) if (g_pages[i] == h) { idx = i; break; }
-    if (idx >= 0 && g_pageProcOld[idx] != nullptr)
-        return CallWindowProcW(g_pageProcOld[idx], h, m, w, l);
-    return DefWindowProcW(h, m, w, l);
+// ---------- 流程面板绘制 ----------
+static void DrawFlowPanel(HDC dc, const RECT& pr) {
+    HBRUSH bg = CreateSolidBrush(ui::UiColor(ui::UiColorRole::Surface));
+    FillRect(dc, &pr, bg);
+    DeleteObject(bg);
+    HBRUSH frame = CreateSolidBrush(ui::UiColor(ui::UiColorRole::Accent));
+    FrameRect(dc, &pr, frame);
+    DeleteObject(frame);
+    SetBkMode(dc, TRANSPARENT);
+
+    ui::UiSelectFont(dc, ui::UiFontRole::Title);
+    SetTextColor(dc, ui::UiColor(ui::UiColorRole::Accent));
+    RECT tr{pr.left + ui::UiScale(14), pr.top + ui::UiScale(8), pr.right - ui::UiScale(60), pr.top + ui::UiScale(30)};
+    DrawTextW(dc, Utf8ToWide(T("优化流程", "OPERATION")).c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    {  // 旋转指示器
+        const int cx = pr.right - ui::UiScale(24), cy = pr.top + ui::UiScale(20), r = ui::UiScale(8);
+        HPEN ring = CreatePen(PS_SOLID, 1, ui::UiColor(ui::UiColorRole::Border));
+        HPEN oldPen = static_cast<HPEN>(SelectObject(dc, ring));
+        HBRUSH oldBr = static_cast<HBRUSH>(SelectObject(dc, GetStockObject(NULL_BRUSH)));
+        Ellipse(dc, cx - r, cy - r, cx + r, cy + r);
+        SelectObject(dc, oldPen);
+        DeleteObject(ring);
+        HPEN arc = CreatePen(PS_SOLID, 2, ui::UiColor(ui::UiColorRole::Accent));
+        oldPen = static_cast<HPEN>(SelectObject(dc, arc));
+        const double a0 = g_flowAngle * 3.14159265358979 / 180.0;
+        POINT pts[3] = {
+            {cx + static_cast<int>(r * 0.95 * std::cos(a0)), cy + static_cast<int>(r * 0.95 * std::sin(a0))},
+            {cx + static_cast<int>(r * 0.95 * std::cos(a0 + 1.2)), cy + static_cast<int>(r * 0.95 * std::sin(a0 + 1.2))},
+            {cx, cy}};
+        Polygon(dc, pts, 3);
+        SelectObject(dc, oldPen);
+        SelectObject(dc, oldBr);
+        DeleteObject(arc);
+    }
+
+    ui::UiSelectFont(dc, ui::UiFontRole::Body);
+    int y = pr.top + ui::UiScale(34);
+    const int rowH = ui::UiScale(22);
+    for (size_t i = 0; i < g_flowLines.size(); ++i) {
+        if (y + rowH > pr.bottom - ui::UiScale(26)) break;
+        const FlowLineUI& row = g_flowLines[i];
+        COLORREF fg = ui::UiColor(ui::UiColorRole::TextPrimary);
+        if (row.tone == 1) fg = ui::UiColor(ui::UiColorRole::Success);
+        else if (row.tone == 2) fg = ui::UiColor(ui::UiColorRole::Danger);
+        RECT lr{pr.left + ui::UiScale(30), y, pr.right - ui::UiScale(14), y + rowH};
+        SetTextColor(dc, fg);
+        DrawTextW(dc, Utf8ToWide(row.text).c_str(), -1, &lr,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        const int nx = pr.left + ui::UiScale(16), ny = y + rowH / 2;
+        HBRUSH dot = CreateSolidBrush(fg);
+        HBRUSH oldB = static_cast<HBRUSH>(SelectObject(dc, dot));
+        HPEN noPen = static_cast<HPEN>(SelectObject(dc, GetStockObject(NULL_PEN)));
+        Ellipse(dc, nx - ui::UiScale(3), ny - ui::UiScale(3), nx + ui::UiScale(3), ny + ui::UiScale(3));
+        SelectObject(dc, noPen);
+        SelectObject(dc, oldB);
+        DeleteObject(dot);
+        y += rowH;
+    }
+
+    RECT info{pr.left + ui::UiScale(14), pr.bottom - ui::UiScale(22), pr.right - ui::UiScale(14), pr.bottom - ui::UiScale(4)};
+    ui::UiSelectFont(dc, ui::UiFontRole::Caption);
+    SetTextColor(dc, g_flowHasFail ? ui::UiColor(ui::UiColorRole::Danger) : ui::UiColor(ui::UiColorRole::TextMuted));
+    DrawTextW(dc,
+              Utf8ToWide(g_flowHasFail ? T("存在失败项（可随时回滚）", "has failures (rollback anytime)")
+                                       : T("实时反馈；完成后自动隐藏；可随时回滚", "live feedback; auto-hide when done; rollback anytime"))
+                  .c_str(),
+              -1, &info, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
 // ---------- 窗口过程 ----------
+static WNDPROC g_pageProcOld[5] = {};
+
+static LRESULT CALLBACK PageProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+    if (m == WM_COMMAND) return SendMessageW(GetParent(h), m, w, l);
+    int idx = -1;
+    for (int i = 0; i < 5; ++i)
+        if (g_pages[i] == h) { idx = i; break; }
+    if (idx >= 0 && g_pageProcOld[idx] != nullptr) return CallWindowProcW(g_pageProcOld[idx], h, m, w, l);
+    return DefWindowProcW(h, m, w, l);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE: {
             const HINSTANCE hInst = reinterpret_cast<HINSTANCE>(GetModuleHandleW(nullptr));
             g_hwnd = hwnd;
-            g_whiteBrush = CreateSolidBrush(RGB(255, 255, 255));
-            g_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fontBold = CreateFontW(-15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                     CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fontBig = CreateFontW(-22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                    CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            // 主题令牌默认按「系统 DPI」生成；本窗口可能在更高 DPI 的显示器上（本机 144），
+            // 这里先按窗口 DPI 同步一次，保证外壳布局与页面模块使用同一套缩放。
+            ui::UiOnDpiChanged(ui::UiDpiForWindow(hwnd));
+            g_font = ui::UiFont(ui::UiFontRole::Body);
+            g_brushPanel = CreateSolidBrush(ui::UiColor(ui::UiColorRole::WindowBg));
 
-            auto makeCtl = [&](HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style,
-                               int x, int y, int w, int h, int id, DWORD ex = 0) {
-                HWND c = CreateWindowExW(ex, cls, text, style | WS_CHILD | WS_VISIBLE,
-                                         x, y, w, h, parent, reinterpret_cast<HMENU>(id), hInst, nullptr);
-                if (c && g_font) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+            auto makeCtl = [&](HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style, int id) {
+                HWND c = CreateWindowExW(0, cls, text, style | WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, parent,
+                                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), hInst, nullptr);
+                if (c != nullptr && g_font != nullptr) SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
                 return c;
             };
 
-            // ----- 顶部：语言 -----
-            g_lang = makeCtl(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST, 760, 12, 90, 120, IDC_LANG);
+            g_lang = makeCtl(hwnd, L"COMBOBOX", L"", CBS_DROPDOWNLIST, IDC_LANG);
             SendMessageW(g_lang, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"中文"));
             SendMessageW(g_lang, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
             SendMessageW(g_lang, CB_SETCURSEL, 0, 0);
 
-            // ----- 左侧导航 -----
-            const wchar_t* navNames[5] = {L"", L"", L"", L"", L""};
             for (int i = 0; i < 5; ++i) {
-                g_nav[i] = makeCtl(hwnd, L"BUTTON", L"", BS_OWNERDRAW, 12, 60 + i * 48, 192, 40, IDC_NAV0 + i);
-                (void)navNames;
-            }
-            // ----- 页面容器 -----
-            for (int i = 0; i < 5; ++i)
-                g_pages[i] = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS,
-                                             222, 62, 770, 320, hwnd, nullptr, hInst, nullptr);
-            // 子类化页容器：转发子控件的 WM_COMMAND 到主窗口（STATIC 自身不转发，否则页内按钮全失效）
-            for (int i = 0; i < 5; ++i) {
-                if (g_pages[i] == nullptr) continue;
-                g_pageProcOld[i] = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
-                    g_pages[i], GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PageProc)));
+                g_nav[i] = makeCtl(hwnd, L"BUTTON", L"", BS_OWNERDRAW, IDC_NAV0 + i);
+                if (g_nav[i] != nullptr) ui::PageEnableButtonHover(g_nav[i], false);
             }
 
-            // 【页0 总览】使用引导 + 硬件信息卡 + 一键大按钮
-            HWND p = g_pages[0];
-            g_dashHelp = makeCtl(p, L"STATIC", L"", 0, 18, 12, 720, 24, 0);
-            g_dashCpu = makeCtl(p, L"STATIC", L"", 0, 18, 46, 720, 26, 0);
-            g_dashGpu = makeCtl(p, L"STATIC", L"", 0, 18, 80, 720, 26, 0);
-            g_dashRam = makeCtl(p, L"STATIC", L"", 0, 18, 114, 720, 26, 0);
-            g_bigOpt = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 18, 158, 220, 54, IDC_BIGOPT);
-            SendMessageW(g_bigOpt, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBig), TRUE);
-            g_autoStart = makeCtl(p, L"BUTTON", L"", BS_AUTOCHECKBOX, 252, 170, 220, 24, IDC_AUTOSTART);
-            // 诊断 / 关于：大按钮右侧（x 490 起，避开 252-472 的自启动复选框；y 与一键优化对齐）
-            g_btnAbout = makeCtl(p, L"BUTTON", L"", BS_PUSHBUTTON, 490, 158, 220, 54, IDC_ABOUT);
-            g_dashNote = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 44, 0);
-            // CPU/内存曲线：必须是主窗口子控件（SS_OWNERDRAW 的 WM_DRAWITEM 会发给父窗口）
-            // 位置对齐总览页内容区 (222,62) + (18,278)；由 ShowPage 联动显隐
-            g_spark = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_OWNERDRAW,
-                                      240, 340, 720, 48, hwnd,
-                                      reinterpret_cast<HMENU>(IDC_SPARK), hInst, nullptr);
-            ShowWindow(g_spark, SW_HIDE);
-            // 【页1 游戏优化】
-            p = g_pages[1];
-            g_combo = makeCtl(p, L"COMBOBOX", L"", CBS_DROPDOWNLIST, 18, 16, 200, 200, IDC_COMBO);
-            g_path = makeCtl(p, L"EDIT", L"", 0, 18, 54, 200, 26, IDC_PATH, WS_EX_CLIENTEDGE);
-            g_btnBrowse = makeCtl(p, L"BUTTON", L"", 0, 226, 54, 60, 26, IDC_BROWSE);
-            g_args = makeCtl(p, L"EDIT", L"", 0, 18, 92, 200, 26, IDC_ARGS, WS_EX_CLIENTEDGE);
-            g_power = makeCtl(p, L"BUTTON", L"", BS_AUTOCHECKBOX, 18, 130, 300, 22, IDC_POWERCHK);
-            g_btnApply = makeCtl(p, L"BUTTON", L"", 0, 18, 170, 100, 30, IDC_APPLY);
-            g_btnRollback = makeCtl(p, L"BUTTON", L"", 0, 128, 170, 100, 30, IDC_ROLLBACK);
-            g_btnSave = makeCtl(p, L"BUTTON", L"", 0, 238, 170, 100, 30, IDC_SAVE);
-            SendMessageW(g_btnApply, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
-            g_hint1 = makeCtl(p, L"STATIC", L"", 0, 18, 226, 720, 90, 0);
-            // 【页2 系统调优】
-            p = g_pages[2];
-            g_btnTuneHigh = makeCtl(p, L"BUTTON", L"", 0, 18, 30, 200, 40, IDC_TUNE_HIGH);
-            g_btnTuneBal = makeCtl(p, L"BUTTON", L"", 0, 18, 84, 200, 40, IDC_TUNE_BAL);
-            g_btnTuneRestore = makeCtl(p, L"BUTTON", L"", 0, 18, 138, 200, 40, IDC_TUNE_RESTORE);
-            SendMessageW(g_btnTuneHigh, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontBold), TRUE);
-            g_btnClean = makeCtl(p, L"BUTTON", L"", 0, 18, 192, 200, 40, IDC_CLEAN);
-            g_hint2 = makeCtl(p, L"STATIC", L"", 0, 18, 240, 720, 100, 0);
-            // 【页3 进程】
-            p = g_pages[3];
-            g_listProc = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 460, 200, IDC_PROCLIST);
-            g_btnProcRefresh = makeCtl(p, L"BUTTON", L"", 0, 490, 16, 90, 26, IDC_PROC_REFRESH);
-            g_btnProcHigh = makeCtl(p, L"BUTTON", L"", 0, 490, 60, 90, 26, IDC_PROC_HIGH);
-            g_btnProcNorm = makeCtl(p, L"BUTTON", L"", 0, 490, 104, 90, 26, IDC_PROC_NORM);
-            g_hint3 = makeCtl(p, L"STATIC", L"", 0, 18, 232, 720, 44, 0);
-            // 【页4 启动项】
-            p = g_pages[4];
-            g_listStartup = makeCtl(p, L"LISTBOX", L"", LBS_NOTIFY | WS_TABSTOP, 18, 16, 360, 200, IDC_STARTUP_LIST);
-            g_btnStartupRefresh = makeCtl(p, L"BUTTON", L"", 0, 390, 16, 90, 26, IDC_STARTUP_REFRESH);
-            g_btnStartupDisable = makeCtl(p, L"BUTTON", L"", 0, 390, 50, 90, 26, IDC_STARTUP_DISABLE);
-            g_btnStartupEnable = makeCtl(p, L"BUTTON", L"", 0, 390, 84, 90, 26, IDC_STARTUP_ENABLE);
-            g_btnStartupRestore = makeCtl(p, L"BUTTON", L"", 0, 390, 118, 110, 26, IDC_STARTUP_RESTORE);
-            g_hint4 = makeCtl(p, L"STATIC", L"", 0, 18, 232, 720, 44, 0);
-            // 科技感优化流程覆盖面板（默认隐藏；优化流程时置顶显示）
-            g_flowPanel = CreateWindowExW(0, L"STATIC", L"",
-                                          WS_CHILD | SS_OWNERDRAW,
-                                          222, 62, 760, 298, hwnd,
-                                          reinterpret_cast<HMENU>(ID_FLOWPANEL), hInst, nullptr);
-            SetWindowPos(g_flowPanel, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            for (int i = 0; i < 5; ++i) {
+                g_pages[i] = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 10, 10, hwnd,
+                                             nullptr, hInst, nullptr);
+                if (g_pages[i] != nullptr)
+                    g_pageProcOld[i] = reinterpret_cast<WNDPROC>(
+                        SetWindowLongPtrW(g_pages[i], GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PageProc)));
+            }
 
-            // ----- 底部日志 + 状态栏 -----
             g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
-                                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
-                                    ES_READONLY | WS_VSCROLL, 12, 390, 980, 210, hwnd, nullptr, hInst, nullptr);
-            if (g_log) SendMessageW(g_log, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
-            g_footer = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE,
-                                       12, 606, 980, 20, hwnd, nullptr, hInst, nullptr);
-            if (g_footer) SendMessageW(g_footer, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+                                    WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
+                                    0, 0, 10, 10, hwnd, nullptr, hInst, nullptr);
+            if (g_log != nullptr) SendMessageW(g_log, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+            g_footer = makeCtl(hwnd, L"STATIC", L"", 0, 0);
 
-            // 标签注册（语言切换刷新）
-            const char* navZh[5] = {"总览", "游戏优化", "系统调优", "进程", "启动项"};
-            const char* navEn[5] = {"Dashboard", "Game Tune", "System Tune", "Processes", "Startup"};
-            for (int i = 0; i < 5; ++i) Label(g_nav[i], navZh[i], navEn[i]);
-            Label(g_bigOpt, "一键性能优化", "One-click Boost");
-            Label(g_autoStart, "开机自启动（随系统开机运行）", "Start with Windows");
-            Label(g_btnAbout, "诊断 / 关于", "Diagnostics / About");
-            Label(g_btnBrowse, "浏览...", "Browse...");
-            Label(g_btnApply, "应用优化", "Apply");
-            Label(g_btnRollback, "回滚", "Rollback");
-            Label(g_btnSave, "保存游戏设置", "Save Settings");
-            Label(g_power, "启用电源方案切换", "Enable power scheme switch");
-            Label(g_btnTuneHigh, "高性能档", "High Performance");
-            Label(g_btnTuneBal, "平衡档", "Balanced");
-            Label(g_btnTuneRestore, "恢复调优", "Restore Tune");
-            Label(g_btnClean, "清理临时文件", "Clean Temp");
-            Label(g_btnProcRefresh, "刷新", "Refresh");
-            Label(g_btnProcHigh, "提升优先级", "Boost Priority");
-            Label(g_btnProcNorm, "恢复正常", "Reset Normal");
-            Label(g_btnStartupRefresh, "刷新", "Refresh");
-            Label(g_btnStartupDisable, "禁用选中", "Disable");
-            Label(g_btnStartupEnable, "启用选中", "Enable");
-            Label(g_btnStartupRestore, "恢复全部", "Restore All");
-            Label(g_hint1,
-                  "玩法：路径留空 → 优化正在运行的游戏；填写该游戏 exe 路径并「保存游戏设置」→「应用优化」会先代启动并自动优化。",
-                  "Tip: leave path empty to optimize a running game; set the exe path + Save, then Apply will launch and optimize it.");
-            Label(g_hint2,
-                  "调优 = 切换高性能/平衡电源 + 处理器最大/最小频率 + 系统调度优先级（需管理员权限）。应用前自动快照，「恢复调优」可还原。",
-                  "Tune = power scheme + processor min/max + priority separation (admin). Auto snapshot; Restore Tune reverts it.");
-            Label(g_hint3,
-                  "列表仅显示 8 款支持游戏中正在运行的；「一键优化」会自动并发优化其中全部游戏。",
-                  "Lists the supported games currently running; One-click Boost optimizes all of them.");
-            Label(g_hint4,
-                  "选中后可禁用/启用（禁用=改名保留并记录备份）；「恢复全部」还原所有被本工具禁用的项。",
-                  "Select an entry to disable/enable (rename-based, backed up); Restore All reverts them.");
+            g_flowPanel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | SS_OWNERDRAW, 0, 0, 10, 10, hwnd,
+                                          reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_FLOWPANEL)), hInst, nullptr);
+            ShowWindow(g_flowPanel, SW_HIDE);
 
-            // 初始化
-            SetWindowTextW(g_dashHelp,
-                Utf8ToWide(T("怎么用：① 启动游戏（或到「游戏优化」页配置路径后由工具代启动）→ ② 点上面一键 → ③ 随时「回滚」。",
-                             "How to use: 1) start a game (or set its exe path in Game Tune)  2) click Boost  3) Rollback anytime.")).c_str());
-            SetWindowTextW(g_dashNote,
-                Utf8ToWide(std::string(T("所有功能免费 · 无注入、无内核 Hook · 每次优化自动快照可回滚",
-                                         "All free · no injection, no kernel hooks · auto snapshot each optimize"))
-                            + "\n" + LastOptimizeTime()).c_str());
-            RefreshGameList();
-            UpdateGameHint();
-            RefreshProcList();
-            RefreshStartupList();
-            ShowPage(0);
-            UpdateDashboard();
-            SendMessageW(g_autoStart, BM_SETCHECK, AutoStartExists() ? BST_CHECKED : BST_UNCHECKED, 0);
-            {
-                // 系统调优页显示按硬件的档位推荐 + 当前电源方案
-                wchar_t baseTxt[1024] = {};
-                GetWindowTextW(g_hint2, baseTxt, 1024);
-                const bool hi = gopt::SystemTuner::RecommendHighPerf(g_core->Profile());
-                std::string rec = std::string("\n") + T("本机推荐：", "Recommended: ")
-                    + (hi ? T("高性能档", "high performance") : T("平衡档", "balanced"));
-                GUID scheme{};
-                std::string powerName = T("未知", "unknown");
-                if (gopt::HAL::QueryActivePowerScheme(&scheme)) powerName = gopt::HAL::PowerSchemeName(scheme);
-                rec += std::string("\n") + T("当前电源方案：", "Active power scheme: ") + powerName;
-                std::wstring w(baseTxt);
-                w += Utf8ToWide(rec);
-                SetWindowTextW(g_hint2, w.c_str());
-            }
-            SetTimer(hwnd, IDT_LIVE, 1000, nullptr);
+            const ui::PageHostHooks pageHooks = MakePageHostHooks();
+            ui::DashboardPageCreate(g_pages[0], pageHooks);
+            ui::GamePageCreate(g_pages[1], pageHooks);
+
+            RECT prc{};
+            GetClientRect(hwnd, &prc);
+            const ui::PageTune::Hooks tuneHooks = MakeTuneHooks();
+            const ui::PageProcess::Hooks procHooks = MakeProcessHooks();
+            const ui::PageStartup::Hooks startHooks = MakeStartupHooks();
+            g_pageTune = ui::PageTune::Create(g_pages[2], prc, tuneHooks);
+            g_pageProcess = ui::PageProcess::Create(g_pages[3], prc, procHooks);
+            g_pageStartup = ui::PageStartup::Create(g_pages[4], prc, startHooks);
+
             TrayAdd();
-            AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + "  所有功能免费\n");
-            AddLog(T("左侧导航切换功能；一键优化 = 并发处理所有运行中的支持游戏。\n\n",
-                     "Use the nav; one-click = concurrent batch optimize of running games.\n\n"));
+            LayoutShell();
+            ShowPage(0);
+            SetTimer(hwnd, IDT_FLOW, 1000, nullptr);
+            AddLog(std::string("GameOptimizer v") + GOPT_VERSION_STR + T("  ·  所有功能免费\n", "  ·  all features free\n"));
         } break;
 
+        case WM_SIZE:
+            LayoutShell();
+            break;
+
+        case WM_DPICHANGED: {
+            const RECT* sug = reinterpret_cast<const RECT*>(lp);
+            if (sug != nullptr)
+                SetWindowPos(hwnd, nullptr, sug->left, sug->top, sug->right - sug->left, sug->bottom - sug->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            ui::UiOnDpiChanged(HIWORD(wp));
+            g_font = ui::UiFont(ui::UiFontRole::Body);
+            if (g_log != nullptr) SendMessageW(g_log, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+            if (g_footer != nullptr) SendMessageW(g_footer, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+            if (g_lang != nullptr) SendMessageW(g_lang, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+            ApplyThemeAll();
+            LayoutShell();
+        } break;
+
+        case WM_THEMECHANGED:
+            ui::UiThemeRefresh();
+            ApplyThemeAll();
+            LayoutShell();
+            break;
+
         case WM_DRAWITEM: {
-            // 左侧导航自绘：激活页高亮蓝色 + 白色文字
             auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
-            if (dis != nullptr && dis->CtlID >= IDC_NAV0 && dis->CtlID <= IDC_NAV4) {
-                const int page = dis->CtlID - IDC_NAV0;
-                const bool active = (page == g_page);
-                HDC dc = dis->hDC;
-                RECT r = dis->rcItem;
-                HBRUSH bg = CreateSolidBrush(active ? RGB(37, 99, 235) : RGB(241, 245, 249));
-                FillRect(dc, &r, bg);
-                DeleteObject(bg);
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, active ? RGB(255, 255, 255) : RGB(40, 55, 80));
+            if (dis == nullptr) break;
+            if (dis->CtlID >= IDC_NAV0 && dis->CtlID <= IDC_NAV4) {
+                const int page = static_cast<int>(dis->CtlID - IDC_NAV0);
                 static const char* zh[5] = {"总览", "游戏优化", "系统调优", "进程", "启动项"};
                 static const char* en[5] = {"Dashboard", "Game Tune", "System Tune", "Processes", "Startup"};
-                const std::wstring t = Utf8ToWide(T(zh[page], en[page]));
-                RECT tr = r;
-                tr.left += 12;
-                DrawTextW(dc, t.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                ui::UiDrawButton(dis->hDC, dis->rcItem, ui::UiButtonStateFromDrawItem(dis), T(zh[page], en[page]),
+                                 page == g_page);
                 return TRUE;
             }
-            // 科技感优化流程面板
-            if (dis != nullptr && dis->CtlID == ID_FLOWPANEL) {
-                HDC dc = dis->hDC;
-                RECT pr = dis->rcItem;
-                HBRUSH dark = CreateSolidBrush(RGB(11, 18, 32));
-                FillRect(dc, &pr, dark);
-                DeleteObject(dark);
-                HBRUSH nib = CreateSolidBrush(RGB(0, 229, 255));
-                FrameRect(dc, &pr, nib);
-                DeleteObject(nib);
-                SetBkMode(dc, TRANSPARENT);
-                // 标题 + 旋转指示（科技感 spinner）
-                SetTextColor(dc, RGB(0, 229, 255));
-                SelectObject(dc, g_fontBold ? g_fontBold : GetStockObject(DEFAULT_GUI_FONT));
-                RECT tr{pr.left + 16, pr.top + 8, pr.right - 200, pr.top + 34};
-                DrawTextW(dc, Utf8ToWide(T("优化流程", "OPTIMIZING")).c_str(), -1, &tr,
-                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-                {
-                    const int cx = pr.right - 26, cy = pr.top + 21;
-                    HPEN ring = CreatePen(PS_SOLID, 2, RGB(30, 41, 59));
-                    HPEN arc = CreatePen(PS_SOLID, 2, RGB(0, 229, 255));
-                    HPEN orp = (HPEN)SelectObject(dc, ring);
-                    Ellipse(dc, cx - 8, cy - 8, cx + 8, cy + 8);
-                    SelectObject(dc, orp);
-                    DeleteObject(ring);
-                    HPEN oap = (HPEN)SelectObject(dc, arc);
-                    const double a0 = g_flowAngle * 3.14159265 / 180.0;
-                    const double a1 = a0 + 4.2;
-                    const int r = 8;
-                    const int x0 = cx + static_cast<int>(r * std::cos(a0));
-                    const int y0 = cy + static_cast<int>(r * std::sin(a0));
-                    const int x1 = cx + static_cast<int>(r * std::cos(a1));
-                    const int y1 = cy + static_cast<int>(r * std::sin(a1));
-                    const int xt = cx + static_cast<int>(r * 0.2 * std::cos(a0 + 2.1));
-                    const int yt = cy + static_cast<int>(r * 0.2 * std::sin(a0 + 2.1));
-                    POINT pts[3] = {{x0, y0}, {x1, y1}, {xt, yt}};
-                    Polygon(dc, pts, 3);
-                    SelectObject(dc, oap);
-                    DeleteObject(arc);
-                }
-                // 扫描线动画
-                const int sx = pr.left + 8 + (g_flowAngle % 360) * (pr.right - pr.left - 24) / 360;
-                HBRUSH scan = CreateSolidBrush(RGB(34, 211, 238));
-                RECT sl{sx, pr.top + 2, sx + 36, pr.top + 4};
-                FillRect(dc, &sl, scan);
-                DeleteObject(scan);
-                // 大号百分比
-                const int pctV = static_cast<int>(g_progress * 100.0 + 0.5);
-                SelectObject(dc, g_fontBig ? g_fontBig : GetStockObject(DEFAULT_GUI_FONT));
-                SetTextColor(dc, RGB(255, 255, 255));
-                RECT pb{pr.right - 190, pr.top + 4, pr.right - 48, pr.top + 52};
-                DrawTextW(dc, Utf8ToWide(std::to_string(pctV) + "%").c_str(), -1, &pb,
-                          DT_RIGHT | DT_TOP | DT_SINGLELINE);
-                // 步骤列表
-                SelectObject(dc, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT));
-                int y = pr.top + 48;
-                int curIdx = -1;
-                for (size_t i = 0; i < g_flowSteps.size(); ++i) {
-                    if (!g_flowSteps[i].ok && !g_flowSteps[i].fail) { curIdx = static_cast<int>(i); break; }
-                }
-                const int total = static_cast<int>(g_flowSteps.size());
-                for (int i = 0; i < total && y < pr.bottom - 40; ++i) {
-                    const FlowStepUI& s = g_flowSteps[static_cast<size_t>(i)];
-                    const bool cur = (i == curIdx);
-                    HBRUSH nb = nullptr;
-                    HPEN np = nullptr;
-                    if (s.ok) { nb = CreateSolidBrush(RGB(34, 197, 94)); np = CreatePen(PS_SOLID, 1, RGB(34, 197, 94)); }
-                    else if (s.fail) { nb = CreateSolidBrush(RGB(239, 68, 68)); np = CreatePen(PS_SOLID, 1, RGB(239, 68, 68)); }
-                    else if (cur) { nb = CreateSolidBrush(RGB(11, 18, 32)); np = CreatePen(PS_SOLID, 2, RGB(0, 229, 255)); }
-                    else { nb = CreateSolidBrush(RGB(30, 41, 59)); np = CreatePen(PS_SOLID, 1, RGB(71, 85, 105)); }
-                    HBRUSH ob = (HBRUSH)SelectObject(dc, nb);
-                    HPEN op = (HPEN)SelectObject(dc, np);
-                    const int ny = y + 2;
-                    Ellipse(dc, pr.left + 20, ny, pr.left + 38, ny + 18);
-                    SelectObject(dc, ob);
-                    SelectObject(dc, op);
-                    DeleteObject(nb);
-                    DeleteObject(np);
-                    const std::string mark = s.ok ? "\xE2\x88\x9A"          // √
-                                             : s.fail ? "\xC3\x97"          // ×
-                                             : cur ? "\xE2\x86\x92"          // →
-                                             : "\xC2\xB7";                  // ·
-                    SetTextColor(dc, s.ok ? RGB(74, 222, 128) : s.fail ? RGB(248, 113, 113)
-                                       : cur ? RGB(0, 229, 255) : RGB(100, 116, 139));
-                    RECT mr{pr.left + 20, ny, pr.left + 38, ny + 18};
-                    DrawTextW(dc, Utf8ToWide(mark).c_str(), -1, &mr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    SetTextColor(dc, cur ? RGB(255, 255, 255) : RGB(148, 163, 184));
-                    RECT lr{pr.left + 52, ny - 2, pr.right - 150, ny + 20};
-                    DrawTextW(dc, Utf8ToWide(s.label).c_str(), -1, &lr,
-                              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-                    std::string st;
-                    if (s.ok) st = "OK · " + std::to_string(s.elapsedMs) + " ms";
-                    else if (s.fail) st = "FAIL · " + std::to_string(s.elapsedMs) + " ms";
-                    else if (cur) st = T("运行中…", "running…");
-                    SetTextColor(dc, s.ok ? RGB(74, 222, 128) : s.fail ? RGB(248, 113, 113) : RGB(34, 211, 238));
-                    RECT sr{pr.right - 150, ny - 2, pr.right - 16, ny + 20};
-                    DrawTextW(dc, Utf8ToWide(st).c_str(), -1, &sr, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-                    y += 26;
-                }
-                // 底部进度条 + 摘要
-                RECT pbt{pr.left + 16, pr.bottom - 26, pr.right - 16, pr.bottom - 20};
-                HBRUSH bgT2 = CreateSolidBrush(RGB(30, 41, 59));
-                FillRect(dc, &pbt, bgT2);
-                DeleteObject(bgT2);
-                const int pw2 = static_cast<int>((pbt.right - pbt.left) * g_progress);
-                RECT pbf = pbt;
-                pbf.right = pbt.left + pw2;
-                HBRUSH fgT = CreateSolidBrush(RGB(0, 229, 255));
-                FillRect(dc, &pbf, fgT);
-                DeleteObject(fgT);
-                SetTextColor(dc, RGB(148, 163, 184));
-                RECT info{pr.left + 16, pr.bottom - 18, pr.right - 16, pr.bottom - 2};
-                const std::string sum = std::string(T("第 ", "Step "))
-                    + std::to_string((curIdx < 0 ? total : curIdx + 1)) + "/" + std::to_string(total)
-                    + " · " + (g_flowHasFail ? T("存在失败项（可随时回滚）", "has failures (rollback anytime)")
-                                             : T("自动快照已就绪，可随时回滚", "auto snapshot ready, rollback anytime"));
-                DrawTextW(dc, Utf8ToWide(sum).c_str(), -1, &info, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            if (dis->CtlID == ID_FLOWPANEL) {
+                DrawFlowPanel(dis->hDC, dis->rcItem);
                 return TRUE;
             }
-            // 总览：CPU/内存 48 秒实时曲线（纯 GDI）
-            if (dis != nullptr && dis->CtlID == IDC_SPARK) {
-                HDC dc = dis->hDC;
-                RECT r = dis->rcItem;
-                HBRUSH bg = CreateSolidBrush(RGB(11, 18, 32));
-                FillRect(dc, &r, bg);
-                DeleteObject(bg);
-                HBRUSH nb = CreateSolidBrush(RGB(0, 229, 255));
-                FrameRect(dc, &r, nb);
-                DeleteObject(nb);
-                SetBkMode(dc, TRANSPARENT);
-                // 图例
-                SetTextColor(dc, RGB(34, 211, 238));
-                SelectObject(dc, g_font ? g_font : GetStockObject(DEFAULT_GUI_FONT));
-                RECT lg{r.left + 10, r.top + 3, r.right - 10, r.top + 20};
-                DrawTextW(dc, Utf8ToWide(std::string(T("CPU / 内存 实时（48 秒）  ", "CPU / RAM live (48s)  "))
-                                          + T("CPU=青色  内存=绿色", "CPU=cyan  RAM=green")).c_str(),
-                          -1, &lg, DT_LEFT | DT_TOP | DT_SINGLELINE);
-                const int top = r.top + 22, bottom = r.bottom - 6, left = r.left + 10, right = r.right - 10;
-                for (int pass = 0; pass < 2; ++pass) {
-                    const float* hist = pass == 0 ? g_cpuHist : g_ramHist;
-                    HPEN pen = CreatePen(PS_SOLID, 1, pass == 0 ? RGB(0, 229, 255) : RGB(74, 222, 128));
-                    HPEN op = (HPEN)SelectObject(dc, pen);
-                    int ox = 0, oy = 0;
-                    for (int i = 0; i < g_histCount; ++i) {
-                        const float v = hist[i] < 0 ? 0 : (hist[i] > 100 ? 100 : hist[i]);
-                        const int x = left + i * (right - left) / 47;
-                        const int y = bottom - static_cast<int>(v * (bottom - top) / 100.0f);
-                        if (i == 0) { ox = x; oy = y; MoveToEx(dc, x, y, nullptr); }
-                        else { LineTo(dc, x, y); }
-                    }
-                    SelectObject(dc, op);
-                    DeleteObject(pen);
-                }
-                return TRUE;
+        } break;
+
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX: {
+            HDC dc = reinterpret_cast<HDC>(wp);
+            if (dc != nullptr) {
+                SetTextColor(dc, ui::UiColor(ui::UiColorRole::TextPrimary));
+                SetBkColor(dc, ui::UiColor(ui::UiColorRole::WindowBg));
             }
-            break;
-        }
+            if (g_brushPanel != nullptr) return reinterpret_cast<LRESULT>(g_brushPanel);
+        } break;
+
+        case WM_ERASEBKGND:
+            return 1;
 
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd, &ps);
             RECT rc{};
             GetClientRect(hwnd, &rc);
-            // 顶部标题栏
-            RECT hdr{0, 0, rc.right, 52};
-            HBRUSH b1 = CreateSolidBrush(RGB(37, 99, 235));
-            FillRect(dc, &hdr, b1);
-            DeleteObject(b1);
+            HBRUSH bg = CreateSolidBrush(ui::UiColor(ui::UiColorRole::WindowBg));
+            FillRect(dc, &rc, bg);
+            DeleteObject(bg);
+            RECT hdr{0, 0, rc.right, ui::UiScale(48)};
+            HBRUSH hb = CreateSolidBrush(ui::UiColor(ui::UiColorRole::Accent));
+            FillRect(dc, &hdr, hb);
+            DeleteObject(hb);
+            RECT side{0, ui::UiScale(48), ui::UiScale(190), rc.bottom};
+            HBRUSH sb = CreateSolidBrush(ui::UiColor(ui::UiColorRole::PanelBg));
+            FillRect(dc, &side, sb);
+            DeleteObject(sb);
             SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(255, 255, 255));
-            const HFONT old = static_cast<HFONT>(SelectObject(dc, g_fontBold ? g_fontBold : GetStockObject(DEFAULT_GUI_FONT)));
-            RECT tr{16, 6, 400, 46};
+            SetTextColor(dc, ui::UiColor(ui::UiColorRole::TextOnAccent));
+            ui::UiSelectFont(dc, ui::UiFontRole::Title);
+            RECT tr{ui::UiScale(12), 0, ui::UiScale(360), ui::UiScale(48)};
             DrawTextW(dc, L"GameOptimizer", -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            SelectObject(dc, old);
-            // 侧边栏背景（浅灰）+ 当前页高亮
-            RECT sb{0, 52, 216, rc.bottom};
-            HBRUSH sbB = CreateSolidBrush(RGB(241, 245, 249));
-            FillRect(dc, &sb, sbB);
-            DeleteObject(sbB);
-            RECT hl{12, 60 + g_page * 48, 204, 60 + g_page * 48 + 40};
-            HBRUSH hlB = CreateSolidBrush(RGB(37, 99, 235));
-            FillRect(dc, &hl, hlB);
-            DeleteObject(hlB);
-            // 进度条（仅在执行流程时显示）
-            if (g_progress > 0.0) {
-                RECT track{228, 58 + 332, rc.right - 16, 58 + 338};
-                HBRUSH bgT = CreateSolidBrush(RGB(226, 232, 240));
-                FillRect(dc, &track, bgT);
-                DeleteObject(bgT);
-                const int w = static_cast<int>((track.right - track.left) * g_progress);
-                RECT fill = track;
-                fill.right = track.left + w;
-                HBRUSH fg = CreateSolidBrush(RGB(37, 99, 235));
-                FillRect(dc, &fill, fg);
-                DeleteObject(fg);
-            }
             EndPaint(hwnd, &ps);
         } break;
-
-        case WM_CTLCOLORSTATIC:
-        case WM_CTLCOLOREDIT:
-        case WM_CTLCOLORLISTBOX: {
-            // 页面容器（STATIC）与控件统一白色
-            if (reinterpret_cast<HDC>(wp) != nullptr) {
-                SetTextColor(reinterpret_cast<HDC>(wp), RGB(30, 30, 30));
-                SetBkColor(reinterpret_cast<HDC>(wp), RGB(255, 255, 255));
-            }
-            return reinterpret_cast<LRESULT>(g_whiteBrush);
-        }
 
         case WM_COMMAND: {
             const int id = LOWORD(wp);
             const int code = HIWORD(wp);
             if (id == IDC_LANG && code == CBN_SELCHANGE) {
                 SetLang(SendMessageW(g_lang, CB_GETCURSEL, 0, 0) == 1 ? Lang::En : Lang::Zh);
-                ApplyAllLabels();
-                UpdateGameHint();
-                RefreshProcList();
-                RefreshStartupList();
-                UpdateFooter();
+                ApplyLanguageAll();
                 return 0;
             }
-            if (code == CBN_SELCHANGE && id == IDC_COMBO) {
-                LoadGameConfigToUI();
-                UpdateGameHint();
-                return 0;
-            }
-            // 进程列表双击 = 提升优先级（与「提升优先级」按钮共用 ApplyProcPriority，逻辑不分叉）
-            if (id == IDC_PROCLIST && code == LBN_DBLCLK) {
-                ApplyProcPriority(true);
-                return 0;
-            }
-            if (code != BN_CLICKED) return 0;
-            if (id >= IDC_NAV0 && id <= IDC_NAV4) {
+            if (code == BN_CLICKED && id >= IDC_NAV0 && id <= IDC_NAV4) {
                 ShowPage(id - IDC_NAV0);
                 return 0;
             }
-            if (id == IDC_BIGOPT) {
-                AddLog(std::string(T("== 一键性能优化 ==\n", "== One-click boost ==\n")));
-                AppCore* core = MakeCore();
-                std::thread([core]() {
-                    core->OptimizeAll([](const gopt::AppCore::FlowEvent& e) {
-                        PostMessageW(g_hwnd, WM_APP_UIEVENT, 0, reinterpret_cast<LPARAM>(new PendingFlow{e}));
-                    }, 300);
-                    PostMessageW(g_hwnd, WM_APP_FINISH, 0, 0);
-                    delete core;
-                }).detach();
-                return 0;
-            }
-            if (id == IDC_AUTOSTART) {
-                const bool on = SendMessageW(g_autoStart, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                AutoStartSet(on);
-                AddLog(std::string(T("开机自启动：", "Start with Windows: "))
-                       + (on ? T("已开启", "enabled") : T("已关闭", "disabled")) + "\n\n");
-                return 0;
-            }
-            if (id == IDC_ABOUT) { ShowDiagnosticsDialog(); return 0; }
-            if (id == IDC_BROWSE) { BrowsePath(); return 0; }
-            if (id == IDC_SAVE) { SaveCurrentGameConfig(); return 0; }
-            if (id == IDC_APPLY) {
-                const GameId sel = CurrentGame();
-                AddLog(std::string(T("== 应用优化 ", "== Apply ")) + gopt::GameIdToString(sel) + " ==\n");
-                AppCore* core = MakeCore();
-                std::thread([core, sel]() {
-                    core->OptimizeForGame(sel, [](const gopt::AppCore::FlowEvent& e) {
-                        PostMessageW(g_hwnd, WM_APP_UIEVENT, 0, reinterpret_cast<LPARAM>(new PendingFlow{e}));
-                    }, 300);
-                    PostMessageW(g_hwnd, WM_APP_FINISH, 0, 0);
-                    delete core;
-                }).detach();
-                return 0;
-            }
-            if (id == IDC_ROLLBACK) {
-                AppCore* core = MakeCore();
-                AddLog(core->Rollback());
-                AddLog("\n\n");
-                delete core;
-                return 0;
-            }
-            if (id == IDC_TUNE_HIGH || id == IDC_TUNE_BAL) {
-                AppCore* core = MakeCore();
-                AddLog(std::string(T("== 系统性能调优 ==\n", "== System tune ==\n")));
-                AddLog(core->TuneSystem(id == IDC_TUNE_HIGH));
-                AddLog("\n\n");
-                delete core;
-                return 0;
-            }
-            if (id == IDC_TUNE_RESTORE) {
-                AppCore* core = MakeCore();
-                AddLog(core->RestoreTune());
-                AddLog("\n\n");
-                delete core;
-                return 0;
-            }
-            if (id == IDC_CLEAN) {
-                AddLog(std::string(T("== 系统清洁 ==\n", "== System clean ==\n")));
-                AddLog(SystemTuner::CleanTemp());
-                AddLog("\n\n");
-                return 0;
-            }
-            if (id == IDC_PROC_REFRESH) { RefreshProcList(); return 0; }
-            if (id == IDC_PROC_HIGH || id == IDC_PROC_NORM) {
-                ApplyProcPriority(id == IDC_PROC_HIGH);
-                return 0;
-            }
-            if (id == IDC_STARTUP_REFRESH) { RefreshStartupList(); return 0; }
-            if (id == IDC_STARTUP_RESTORE) {
-                const int n = StartupManager::RestoreAll();
-                AddLog(std::string(T("已恢复 ", "Restored ")) + std::to_string(n) + " " + T("个启动项。\n\n", "startup entries.\n\n"));
-                RefreshStartupList();
-                return 0;
-            }
-            if (id == IDC_STARTUP_DISABLE || id == IDC_STARTUP_ENABLE) {
-                const int sel = static_cast<int>(SendMessageW(g_listStartup, LB_GETCURSEL, 0, 0));
-                if (sel < 0 || sel >= static_cast<int>(g_startups.size()) || g_startups.empty()) {
-                    AddLog(std::string(T("请先在列表中选择要操作的启动项。\n\n",
-                                         "Please select a startup entry first.\n\n")));
-                    return 0;
-                }
-                const bool ok = (id == IDC_STARTUP_DISABLE)
-                                    ? StartupManager::Disable(g_startups[sel].name)
-                                    : StartupManager::Enable(g_startups[sel].name);
-                AddLog(std::string(ok ? "OK: " : "FAIL: ") + g_startups[sel].name + "\n\n");
-                RefreshStartupList();
-                return 0;
-            }
-        } break;
-
-        case WM_APP_UIEVENT: {
-            auto* p = reinterpret_cast<PendingFlow*>(lp);
-            if (p != nullptr) { RenderFlowEvent(p->e); delete p; }
-            return 0;
-        }
-        case WM_APP_FINISH: {
-            AddLog("\n\n");
-            g_progress = 0.0;
-            g_flowActive = false;
-            if (g_flowPanel != nullptr) ShowWindow(g_flowPanel, SW_HIDE);
-            if (g_hwnd != nullptr) KillTimer(g_hwnd, IDT_FLOW);
-            if (g_hwnd != nullptr && !IsWindowVisible(g_hwnd)) {
-                TrayBalloon(L"GameOptimizer",
-                            Utf8ToWide(T("优化完成；点击托盘图标查看结果。",
-                                         "Optimization done; click the tray icon to see results.")));
-            }
-            RefreshProcList();
-            UpdateDashboard();
-            InvalidateRect(g_hwnd, nullptr, FALSE);
-            return 0;
-        }
-        case WM_SIZE: {
-            RECT rc{};
-            GetClientRect(hwnd, &rc);
-            MoveWindow(g_log, 12, rc.bottom - 226, rc.right - 24, 176, TRUE);
-            MoveWindow(g_footer, 12, rc.bottom - 28, rc.right - 24, 20, TRUE);
-            for (int i = 0; i < 5; ++i)
-                if (g_pages[i]) MoveWindow(g_pages[i], 222, 62, rc.right - 234, rc.bottom - 300, TRUE);
-            if (g_flowPanel) MoveWindow(g_flowPanel, 222, 62, rc.right - 234, rc.bottom - 300, TRUE);
+            // 页面控件通知由页面面板就地分发；页容器转发的未知 ID 一律忽略
         } break;
 
         case WM_TIMER:
-            if (wp == static_cast<WPARAM>(IDT_LIVE)) {
-                RefreshCpuLoad();
-                RefreshProcList();  // 每秒更新进程列表（含 CPU%；n<=8，开销可忽略）
-            }
             if (wp == static_cast<WPARAM>(IDT_FLOW)) {
-                g_flowAngle = (g_flowAngle + 4) % 360;
-                if (g_flowPanel != nullptr) InvalidateRect(g_flowPanel, nullptr, FALSE);
+                if (g_flowActive) {
+                    g_flowAngle = (g_flowAngle + 4) % 360;
+                    if (g_flowPanel != nullptr) InvalidateRect(g_flowPanel, nullptr, FALSE);
+                    if (GetTickCount64() - g_flowLastTick > 6000) FlowEnd();
+                }
+            }
+            return 0;
+
+        case WM_TRAY:
+            switch (static_cast<int>(lp)) {
+                case WM_LBUTTONDBLCLK:
+                    ShowMainWindow(hwnd);
+                    break;
+                case WM_RBUTTONUP: {
+                    POINT pt{};
+                    GetCursorPos(&pt);
+                    HMENU menu = CreatePopupMenu();
+                    AppendMenuW(menu, MF_STRING, 1, L"打开主界面 (Open)");
+                    AppendMenuW(menu, MF_STRING, 4, L"清理临时文件 (Clean Temp)");
+                    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+                    AppendMenuW(menu, MF_STRING, 2, L"退出 (Exit)");
+                    SetForegroundWindow(hwnd);
+                    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
+                    DestroyMenu(menu);
+                    if (cmd == 1) {
+                        ShowMainWindow(hwnd);
+                    } else if (cmd == 4) {
+                        ShowMainWindow(hwnd);
+                        AddLog(std::string(T("== 临时文件清理 ==\n", "== Temp clean ==\n")));
+                        AddLog(SystemTuner::CleanTemp());
+                        AddLog("\n\n");
+                    } else if (cmd == 2) {
+                        TrayRemove();
+                        DestroyWindow(hwnd);
+                    }
+                } break;
+                default:
+                    break;
             }
             return 0;
 
         case WM_CLOSE:
-            // 关闭 = 最小化到托盘（看门狗与后台监控继续；需常驻时更稳妥）
             if (g_trayAdded) {
                 ShowWindow(hwnd, SW_HIDE);
                 if (!g_trayBalloonShown) {
@@ -1218,56 +689,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             DestroyWindow(hwnd);
             return 0;
 
-        case WM_TRAY:
-            switch (static_cast<int>(lp)) {
-                case WM_LBUTTONDBLCLK:
-                    ShowMainWindow(hwnd);
-                    break;
-                case WM_RBUTTONUP: {
-                    POINT pt{};
-                    GetCursorPos(&pt);
-                    HMENU menu = CreatePopupMenu();
-                    AppendMenuW(menu, MF_STRING, 1, L"打开主界面 (Open)");
-                    AppendMenuW(menu, MF_STRING, 3, L"一键优化 (One-click Boost)");
-                    AppendMenuW(menu, MF_STRING, 4, L"清理临时文件 (Clean Temp)");
-                    AppendMenuW(menu, MF_STRING, 2, L"退出 (Exit)");
-                    SetForegroundWindow(hwnd);
-                    const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY,
-                                                   pt.x, pt.y, 0, hwnd, nullptr);
-                    DestroyMenu(menu);
-                    if (cmd == 1) ShowMainWindow(hwnd);
-                    else if (cmd == 3) {
-                        ShowMainWindow(hwnd);
-                        PostMessageW(hwnd, WM_COMMAND, IDC_BIGOPT, 0);
-                    }
-                    else if (cmd == 4) {
-                        // 托盘「清理临时文件」：先显示主窗口，再把清理结果写入界面日志（同步调用，与 IDC_CLEAN 一致）
-                        ShowMainWindow(hwnd);
-                        AddLog(SystemTuner::CleanTemp());
-                        AddLog("\n\n");
-                    }
-                    else if (cmd == 2) {
-                        TrayRemove();
-                        DestroyWindow(hwnd);
-                    }
-                    break;
-                }
-            }
-            return 0;
-
         case WM_DESTROY:
+            KillTimer(hwnd, IDT_FLOW);
+            ui::DashboardPageDestroy();
+            ui::GamePageDestroy();
+            if (g_pageTune != nullptr) { ui::PageTune::Destroy(g_pageTune); g_pageTune = nullptr; }
+            if (g_pageProcess != nullptr) { ui::PageProcess::Destroy(g_pageProcess); g_pageProcess = nullptr; }
+            if (g_pageStartup != nullptr) { ui::PageStartup::Destroy(g_pageStartup); g_pageStartup = nullptr; }
             TrayRemove();
             PostQuitMessage(0);
             break;
 
         default:
-            return DefWindowProcW(hwnd, msg, wp, lp);
+            break;
     }
-    return 0;
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     g_core = new AppCore();
+    g_cfg.allowPowerSchemeSwitch = true;  // 用户在系统调优页显式调优时允许切换电源方案
+
+    ui::UiEnablePerMonitorDpi();
+    ui::UiThemeInit(true);
 
     const wchar_t cls[] = L"gopt_gui";
     WNDCLASSW wc{};
@@ -1275,10 +719,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     wc.hInstance = hInst;
     wc.lpszClassName = cls;
     wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.hbrBackground = nullptr;
     RegisterClassW(&wc);
 
-    // 单实例：已有实例时激活其窗口（CreateMutexW 稳定 API）
     HANDLE hMutex = CreateMutexW(nullptr, FALSE, L"GameOptimizer_SingleInstance");
     if (hMutex != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND prev = FindWindowW(cls, nullptr);
@@ -1291,10 +734,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
         return 0;
     }
 
-    HWND hwnd = CreateWindowExW(0, cls, L"GameOptimizer" L" v" GOPT_VERSION_STR,
-                                WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                                1010, 660, nullptr, nullptr, hInst, nullptr);
-    if (!hwnd) return 0;
+    RECT wa{};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    const int margin = ui::UiScale(16);
+    int winW = (wa.right - wa.left) - margin * 2;
+    int winH = (wa.bottom - wa.top) - margin * 2;
+    if (winW < ui::UiScale(900)) winW = ui::UiScale(900);
+    if (winH < ui::UiScale(600)) winH = ui::UiScale(600);
+
+    HWND hwnd = CreateWindowExW(0, cls, L"GameOptimizer v" GOPT_VERSION_STR, WS_OVERLAPPEDWINDOW,
+                                wa.left + margin, wa.top + margin, winW, winH, nullptr, nullptr, hInst, nullptr);
+    if (hwnd == nullptr) {
+        delete g_core;
+        return 0;
+    }
     ShowWindow(hwnd, nShow);
     UpdateWindow(hwnd);
 
@@ -1303,6 +756,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    ui::UiFontShutdown();
+    if (g_brushPanel != nullptr) { DeleteObject(g_brushPanel); g_brushPanel = nullptr; }
     if (hMutex != nullptr) CloseHandle(hMutex);
     delete g_core;
     return 0;

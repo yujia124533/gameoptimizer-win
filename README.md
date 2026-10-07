@@ -20,10 +20,30 @@ A hardware-agnostic Windows game optimizer built on official Win32 APIs only:
 - **Official APIs only**: `SetPriorityClass` / `SetProcessAffinityMask` / `SetProcessWorkingSetSize` / `PowerSetActiveScheme` (+ powercfg / registry)
 - **8 supported games** (Delta Force, LoL, CS2, PUBG, Valorant, Apex, Dota 2, Overwatch 2) with per-game launch config
 - **Rollback-first**: every apply persists snapshots (`%LOCALAPPDATA%\GameOptimizer`), cross-process rollback + watchdog auto-rollback
-- **All features are free** (MIT); native Win32 GUI (zh/en) + CLI `gopt_cli` (status / apply / optimize / rollback / tune / startup / prio / clean ...)
+- **All features are free** (MIT); native Win32 GUI (zh/en) + CLI `gopt_cli` (status / apply / optimize / rollback / savepoints / tune / startup / prio / clean ...)
 - CI builds standalone binaries on every tag; releases on GitHub Releases
 
 Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.cpp` (one line per game), UI polish, more hardware coverage.
+
+## 🎉 v1.1.0 更新日志
+
+**界面全面重构（原生 Win32，无第三方框架）**
+- GUI 拆分为「外壳 + 页面模块」：新增设计令牌/主题层（`ui_theme`）与统一自绘控件库（`ui_widgets`），五个页面各自成模块（`page_dashboard` / `page_game` / `page_tune` / `page_process` / `page_startup`）；外壳只保留导航、日志、状态栏、托盘与流程反馈
+- **高 DPI**：启用 per-monitor DPI 感知（PerMonitorV2），令牌/字体/坐标按窗口 DPI 缩放；本机 144 DPI 下五页控件零重叠、零裁切
+- **主题跟随系统**：读取 `AppsUseLightTheme` 自动切换深/浅色（含运行中刷新）
+- **交互改进**：导航自绘 + 悬停态；流程反馈面板改由操作日志实时驱动，完成后自动隐藏
+- **页面能力补齐**：总览页新增**优化历史**（只读快照列表）与**一键回滚最近一次**；游戏页保存前做路径/参数校验，且**路径为空时保留原有路径**（避免误点保存清空配置）
+
+**新增能力**
+- 只读快照历史 API（`SecurityRollback::SavepointList` / `RecentSavepoints`）：严格只读、格式向后兼容、损坏行优雅降级
+- CLI 新增 `gopt_cli savepoints [list|show <n>]`：只读查看可回滚快照（含「无快照 / 序号越界 / 文件损坏」降级与中英双语对齐输出）
+
+**工程与质量**
+- 构建：`tools/build_w64devkit.ps1` 一次产出 CLI / GUI / 自检三个目标；UI 源码只进 GUI 目标（CLI 与自检保持精简），GUI 补 `comctl32`
+- 构建脚本改为纯 ASCII（避免 Windows PowerShell 5.1 按 ANSI 误读无 BOM 脚本导致解析失败）
+- 文档：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 新增「GUI 分层」章（三层职责 / 文件地图 / 不变量 / 装配契约 / 线程模型）；[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) 新增「UI 改动检查清单」与 GUI 冒烟发布步骤
+
+**已知限制（如实记录）**：本机为 144 DPI，125%/120% 缩放与「文字级截断」未做像素级判定；`回滚` 语义为消耗快照（沿用既有行为，非本次回归）。
 
 ## 🎉 v1.0.19 更新日志
 
@@ -129,10 +149,11 @@ Contributions welcome: add a game preset in `src/preset/GameOptimizationPreset.c
 - **硬件无感**：自动识别 AMD/Intel CPU、NVIDIA/AMD/Intel GPU、内存（DXGI / GetLogicalProcessorInformationEx / SMBIOS / 注册表）
 - **支持 8 款游戏**：三角洲行动、英雄联盟、CS2、绝地求生、无畏契约、Apex Legends、Dota 2、守望先锋2
 - **安全**：只用官方 WinAPI（`SetPriorityClass` / `SetProcessAffinityMask` / `SetProcessWorkingSetSize` / `PowerSetActiveScheme`），**无注入、无内核 Hook**（反作弊游戏放心用，与 Process Lasso 同类操作）
-- **一键回滚**：快照持久化到磁盘，`apply` 与 `rollback` 跨进程可用，多级撤销
+- **一键回滚**：GUI 点一下即可撤销最近一次优化；快照持久化到磁盘，`apply` 与 `rollback` 跨进程可用，多级撤销，并可在「优化历史」里先看清明细
 - **看门狗**：应用后监控系统调度，异常自动回滚
 - **所有功能免费**：电源方案/驱动帧延迟/工作集等全部优化项对所有人开放，无授权门控（仅受系统能力限制：管理员/厂商库）
 - **双界面**：原生 Win32 **GUI**（一键优化/游戏选择/代启动路径/每游戏设置）+ **CLI**
+- **现代界面**：统一设计令牌（浅色/深色两套）+ 高 DPI 感知 + 自绘控件（按钮五态 / 卡片 / 列表行 / 进度条 / 徽标），页面模块化、每页自包含；间距按 8px 栅格、控件高度与圆角全取令牌
 
 ## 功能矩阵
 
@@ -148,12 +169,24 @@ GUI 五大页（总览 / 游戏优化 / 系统调优 / 进程 / 启动项）与 
 | 进程 CPU·内存 | √ | — | GUI「进程」页每个进程显示 优先级 + CPU% + 内存 MB（1 秒刷新）；CLI `list` 只有优先级/亲和性、`watch` 只有整机 CPU/内存 |
 | 启动项管理 | √ | √ | GUI「启动项」页 禁用 / 启用 / 恢复全部；CLI `startup list / disable / enable / restore`（禁用=改名保留，可还原） |
 | 实时监视 | √ | √ | GUI 总览页 CPU/内存卡每秒刷新 + 48 秒实时曲线；CLI `gopt_cli watch [秒数]` |
-| 干跑预览 dry-run | — | √ | CLI `apply <game> --dry-run` / `optimize --dry-run` 只读预览将执行的每一项；GUI 无 dry-run 开关（实际执行时由流程面板逐步显示） |
-| 系统托盘 | √ | — | GUI：关闭窗口最小化到托盘、双击恢复、右键菜单「打开主界面 / 一键优化 / 退出」（含单实例保护） |
+| 干跑预览 dry-run | — | √ | CLI `apply <game> --dry-run` / `optimize --dry-run` 只读预览将执行的每一项；GUI 无 dry-run 开关（实际执行时由流程面板、页内进度/步骤明细与日志逐步显示） |
+| 系统托盘 | √ | — | GUI：关闭窗口最小化到托盘、双击恢复、右键菜单「打开主界面 / 清理临时文件 / 退出」（含单实例保护） |
 | 开机自启 | √ | — | GUI 总览页「开机自启动」勾选（HKCU Run 写入当前路径，默认关闭） |
-| 回滚 | √ | √ | GUI「回滚」按钮；CLI `rollback` / `rollback-all`（快照持久化到 `%LOCALAPPDATA%\GameOptimizer`，跨进程有效） |
+| 回滚 | √ | √ | GUI 总览页「回滚最近一次优化」（历史为空时按钮自动禁用）+ 游戏优化页「回滚」；CLI `gopt_cli rollback` / `rollback-all`（快照持久化到 `%LOCALAPPDATA%\GameOptimizer`，跨进程有效） |
+| 快照历史（只读） | √ | √ | GUI 总览页「优化历史」列表：最新在前、★=回滚目标、双击看明细（条目数 + 每项可恢复内容）、每 5 秒只读刷新、可手动「刷新」；CLI `gopt_cli savepoints [list / show <n>]`。查询严格只读：不建目录、不写文件，文件缺失/损坏时返回空列表 + 原因，绝不误报「有可回滚内容」 |
 
 ## 界面
+
+GUI 为「顶部标题栏 · 左侧五页导航 · 内容区 · 底部日志 + 状态栏」布局，内容区的每一页都是一个自包含页面模块（`src/gui/page_*.cpp`），页内布局按 8px 栅格自适应，窗口过小时自动进入紧凑模式隐藏次要控件（不重叠、不裁切）：
+
+- **总览**：硬件卡（CPU / 核数 / GPU / 内存）+ 实时卡（CPU、内存大号数字 + 进度条）+ 48 秒实时曲线卡；左下动作区：「一键性能优化」（主按钮，后台线程执行、界面不阻塞）、「开机自启动」勾选、「回滚最近一次优化」、「诊断 / 关于」；右下「优化历史」只读列表（最新在前、★=回滚目标、每 5 秒自动刷新、双击看明细）
+- **执行中反馈**：一键优化 / 应用优化进行时，内容区会叠加「优化流程」覆盖面板（步骤状态行 + 旋转指示 + 完成提示，结束后自动隐藏），底部日志同步保留完整明细
+- **游戏优化**：左侧代启动表单（选游戏 / exe 路径 / 启动参数 / 电源·帧延迟·工作集三个开关，含输入校验），右侧预设摘要（按硬件降级后的真实参数：优先级 / 亲和性 / 工作集 / 电源）；底部「应用优化 / 保存游戏设置 / 回滚」+ 进度条、状态行与步骤明细
+- **系统调优**：高性能档 / 平衡档 / 恢复调优 + 清理临时文件（**二次确认**：5 秒内再点一次才执行，页面上常驻安全策略说明）；显示当前电源方案与按硬件的推荐档位
+- **进程**：列表按 CPU% 降序（优先级 + CPU% + 内存 MB），选中项按 PID 保持；**双击某行 = 提升优先级**，另有刷新 / 提升优先级 / 恢复正常
+- **启动项**：列表 + 刷新 / 禁用选中 / 启用选中 / 恢复全部，显示选中项的完整命令行，每次操作都有回执（禁用=改名保留并备份，可一键还原）
+
+关闭窗口 = 最小化到系统托盘（后台看门狗继续）；双击图标恢复，右键菜单可退出、也可直接「清理临时文件」；优化完成时托盘气泡提示。界面右上角可切换 中文/English；主题跟随系统浅色/深色设置，显示器缩放（125% / 150% 等）下自动重排。
 
 ```bat
 :: GUI（推荐）
@@ -161,14 +194,17 @@ gopt_gui.exe
 
 :: CLI
 gopt_cli status                        硬件/预设/提权/授权状态
-gopt_cli watch [秒数]                  实时监视 CPU/内存/运行中游戏（Ctrl+C 退出）
+gopt_cli report [--out <文件>]          诊断报告（一条命令导出全部状态，UTF-8 无 BOM）
+gopt_cli watch [秒数] [--top [N]]      实时监视 CPU/内存/运行中游戏；--top 进程热点榜
 gopt_cli apply cs2                     优化 cs2（游戏运行中 attach；--dry-run 只读预览）
 gopt_cli apply cs2 --game-exe "<路径>"  代启动游戏
 gopt_cli optimize [游戏|system]        一键：优化全部运行中的支持游戏（--dry-run 预览）
 gopt_cli rollback / rollback-all       回滚（跨进程，秒级）
+gopt_cli savepoints [list / show <n>]  只读查看快照历史（list 默认；show 看第 n 条明细）
 gopt_cli tune [high|balanced]          系统调优；tune status 只读查看；tune restore 恢复
 gopt_cli startup list|disable|enable|restore   开机启动项管理
 gopt_cli prio <pid> high|above|normal|below|idle  进程优先级（上限 HIGH）
+gopt_cli game <游戏> [--exe <路径>] [--args "<参数>"]  查看/保存某游戏的代启动配置
 gopt_cli list                          运行中的游戏概览（优先级/亲和性）
 gopt_cli clean                         清理临时文件（%TEMP%，24h 内保留）
 gopt_cli fingerprint / license status  机器指纹 / 授权（所有功能免费，授权可选）
@@ -184,16 +220,20 @@ gopt_cli --version                     版本
 分功能：进程优先级 / 亲和性 / 工作集 / 一键优化**不需要**管理员（但若游戏本身以管理员运行，本工具也需以管理员运行才能打开该进程）；**系统调优（电源方案、处理器频率、调度优先级）需要**管理员。GUI 底部状态栏与 `gopt_cli status` 都会显示当前是否已提权，未提权时明确提示「部分功能需管理员」。
 
 **③ 怎么回滚？**
-每次优化前都会把原值快照持久化到磁盘（`%LOCALAPPDATA%\GameOptimizer`），所以回滚不依赖发起优化的那个进程：GUI 点「回滚」，或在任意终端执行 `gopt_cli rollback`（撤销最近一次）/ `gopt_cli rollback-all`（撤销全部）。跨进程、秒级生效；应用后看门狗发现系统响应异常也会自动回滚。
+每次优化前都会把原值快照持久化到磁盘（`%LOCALAPPDATA%\GameOptimizer`），所以回滚不依赖发起优化的那个进程：GUI 总览页点「回滚最近一次优化」（游戏优化页也有「回滚」），或在任意终端执行 `gopt_cli rollback`（撤销最近一次）/ `gopt_cli rollback-all`（撤销全部）。跨进程、秒级生效；应用后看门狗发现系统响应异常也会自动回滚。
+想先看清「能回滚什么」再动手：GUI 总览页右下「优化历史」列表（最新在前，★=回滚目标）双击任一条即可看明细；命令行用 `gopt_cli savepoints`（列表）/ `gopt_cli savepoints show <n>`（第 n 条明细）。这些查询严格只读——不建目录、不写文件，快照文件缺失或格式异常时只会返回空列表 + 原因，不会给出「部分结果」误导你以为有东西可回滚。
 
 **④ 为什么界面显示「电源方案 未知 / unknown / `<unknown>`」？**
-这是只读查询失败时的正常降级，不影响优化与回滚：当前会话权限不足或系统未返回活动电源方案时，GUI「系统调优」页显示「未知 / unknown」，底部状态栏对应位置显示 `Power ?`；查询成功但方案友好名读不出时（`HAL::PowerSchemeName`）显示 `<unknown>`。想看到具体名称可尝试以管理员运行。
+这是只读查询失败时的正常降级，不影响优化与回滚：当前会话权限不足或系统未返回活动电源方案时，GUI「系统调优」页显示「未知 / unknown」，底部状态栏对应位置显示「电源 ?」（英文界面为 `Power ?`）；查询成功但方案友好名读不出时（`HAL::PowerSchemeName`）显示 `<unknown>`。想看到具体名称可尝试以管理员运行。
 
 **⑤ 清理临时文件会删掉我正在用的文件吗？**
-不会。`%TEMP%` 清理按「时间 + 可删除性」双重保护：**24 小时内修改过的文件一律保留**，被占用 / 锁定的项自动跳过；结果报告分别给出「已清理 / 跳过 / 保留」三类数量。
+不会。`%TEMP%` 清理按「时间 + 可删除性」双重保护：**24 小时内修改过的文件一律保留**，被占用 / 锁定的项自动跳过；结果报告分别给出「已清理 / 跳过 / 保留」三类数量。GUI 上「清理临时文件」还多一层人为保险：**首次点击只进入 5 秒确认态（按钮文案变为「确认清理（再点一次）」），5 秒内再点一次才真正执行**，超时自动取消、不删任何文件。
 
 **⑥ 支持哪些游戏？怎么添加新游戏？**
 内置 8 款：三角洲行动、英雄联盟、CS2、绝地求生、无畏契约、Apex Legends、Dota 2、守望先锋2。新增预设只需在 `src/preset/GameOptimizationPreset.cpp` 加一条（详见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)），无需改动界面代码。
+
+**⑦ 界面支持深色主题和高 DPI（125% / 150% 缩放）吗？**
+支持。颜色、间距、字号、圆角、控件高度全部取自统一设计令牌（浅色/深色两套 + 状态色），启动时跟随系统「应用模式」设置（`AppsUseLightTheme`）选择主题，读不到该设置时降级为浅色，系统主题运行中切换后界面自动重绘；页面模块与统一控件的取色都经 `UiColor()` 等令牌函数，不写死颜色值。高 DPI 走 per-monitor 感知（依次尝试 PerMonitorV2 → PerMonitor → 系统级 DPI 感知，全部失败时由系统位图拉伸，行为与旧版一致），窗口跨显示器时按目标显示器 DPI 重排；间距恒定 8px 栅格，内容区小于约 640×300 逻辑像素时自动进入紧凑模式隐藏次要控件（不重叠、不裁切）。
 
 ## 构建
 
@@ -216,13 +256,15 @@ GUI 构建：CMake 已含 `gopt_gui` 目标（含独立版本资源 `resources\g
 
 ```
 src/
-  hardware/   硬件探测           hal/   统一硬件操作(HAL)
-  preset/     8 款游戏预设         rollback/  快照/回滚/看门狗
-  license/    机器指纹 + 授权      core/  AppCore 协调层
-  gui/        原生 GUI 界面
+  hardware/   硬件探测           hal/   统一硬件操作(HAL，官方 API 唯一出口)
+  preset/     8 款游戏预设         rollback/  快照/回滚/看门狗 + 只读快照历史 API
+  license/    机器指纹 + 授权      core/  AppCore 协调层（唯一业务编排点）
+  gui/        原生 GUI：外壳 gopt_gui.cpp + 设计令牌 ui_theme.* + 统一自绘控件 ui_widgets.*
+              页面模块：page_dashboard.* / page_game.*（页面组 A）
+                        page_tune.* / page_process.* / page_startup.*（页面组 B）
 tools/        构建脚本 / 验证程序 / CLI
 resources/    图标 / 安装脚本 / 版本资源
-docs/         商业化方案（含合规风险）
+docs/         架构 / 贡献指南 / 使用说明 / 商业化方案
 ```
 
 ## 安全边界（设计约束）

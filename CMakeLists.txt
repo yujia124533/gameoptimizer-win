@@ -46,6 +46,14 @@ target_link_libraries(gopt_cli PRIVATE gameopt_core)
 # ---- 原生 GUI（多面板界面，含独立版本资源） ----
 add_executable(gopt_gui WIN32
     src/gui/gopt_gui.cpp
+    # v1.1.0 UI 专用源码（设计令牌/主题/高DPI + 统一自绘控件 + 页面模块）
+    src/gui/ui_theme.cpp
+    src/gui/ui_widgets.cpp
+    src/gui/page_dashboard.cpp
+    src/gui/page_game.cpp
+    src/gui/page_tune.cpp
+    src/gui/page_process.cpp
+    src/gui/page_startup.cpp
     resources/gui_resource.rc
 )
-target_link_libraries(gopt_gui PRIVATE gameopt_core user32 gdi32 comdlg32 shell32 psapi)
+target_link_libraries(gopt_gui PRIVATE gameopt_core user32 gdi32 comdlg32 comctl32 shell32 psapi)

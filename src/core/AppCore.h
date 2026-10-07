@@ -60,6 +60,19 @@ public:
     // 全部回滚（并停止看门狗）
     std::string RollbackAll();
 
+    // ---------------- 只读：快照历史（可回滚性观测，供 CLI/GUI 使用） ----------------
+    // 数据源：%LOCALAPPDATA%\GameOptimizer\savepoints.txt（跨进程有效），与回滚同址。
+    // 严格只读：不写文件、不改内存栈、不触发任何系统设置调整；调用前后文件内容/时间戳不变。
+    // 返回文件顺序（旧 → 新），index 1 起，最后一条 isLatest=true；空 = 从未优化过或文件异常。
+    std::vector<SavepointInfo> Savepoints() const;
+    // 最近 maxCount 条（最新在前）；maxCount==0 表示全部。
+    std::vector<SavepointInfo> RecentSavepoints(size_t maxCount) const;
+    // 最近一次快照查询的降级/失败说明（空 = 查询成功）。
+    // 注意：与回滚结果文本（Rollback()/RollbackAll() 里附带的 LastErrorText）互不覆盖。
+    std::string SavepointsError() const;
+    // 快照文件绝对路径（只读，不创建目录），供诊断显示
+    static std::string SavepointsFilePath();
+
     // 信息查询
     HardwareProfile Profile() const;
     GamePreset ResolvedPreset(GameId id) const;

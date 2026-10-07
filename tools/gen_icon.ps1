@@ -1,4 +1,4 @@
-# 生成 GameOptimizer 图标：蓝色圆角方块 + 金色闪电（多尺寸 PNG 压缩 .ico）
+﻿# 生成 GameOptimizer 图标：蓝色圆角方块 + 金色闪电（多尺寸 PNG 压缩 .ico）
 Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 

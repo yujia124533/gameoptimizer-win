@@ -367,6 +367,25 @@ std::string AppCore::RollbackAll() {
               : "回滚存在失败项（详见日志）: " + rollback_.LastErrorText();
 }
 
+// ---------------- 只读：快照历史（薄封装，全部委派给 SecurityRollback） ----------------
+// 门面原则：这里只做转发，不做任何文件/系统调用，也不缓存查询结果。
+
+std::vector<SavepointInfo> AppCore::Savepoints() const {
+    return rollback_.SavepointList();
+}
+
+std::vector<SavepointInfo> AppCore::RecentSavepoints(size_t maxCount) const {
+    return rollback_.RecentSavepoints(maxCount);
+}
+
+std::string AppCore::SavepointsError() const {
+    return rollback_.SavepointListError();
+}
+
+std::string AppCore::SavepointsFilePath() {
+    return SecurityRollback::SavepointFilePath();
+}
+
 bool AppCore::IsStable() const {
     return rollback_.IsSystemStable();
 }
