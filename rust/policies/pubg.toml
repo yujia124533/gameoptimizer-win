@@ -1,0 +1,51 @@
+# =============================================================================
+# 绝地求生 / PUBG: BATTLEGROUNDS
+#
+# 与 C++ 版 v1.1.0 预设逐字段对应（GameId::PUBG）：
+#   processPriorityClass = HIGH_PRIORITY_CLASS -> class = "high"
+#   leaveCoresForSystem  = 1                   -> reserve_cores = 1（物理核口径）
+#   bindPhysicalOnly     = true                -> physical_only = true
+#   gpuMaxFrames         = 1                   -> Rust 版不实现（第三方厂商库，红线）
+#   switchHighPerformancePower = false         -> 不改电源方案
+#   workingSetMinMB      = 512                 -> >=16GB 时 512MB，8~16GB 时减半为 256MB
+# =============================================================================
+schema = 1
+
+[[game]]
+id = "pubg"
+name_zh = "绝地求生"
+name_en = "PUBG: BATTLEGROUNDS"
+match = "TslGame.exe"
+name_aliases = ["PUBG", "PlayerUnknown's Battlegrounds"]
+description_zh = "High 优先级；仅物理核（保留 1 个物理核给系统）；工作集下限按内存降级"
+description_en = "High priority; physical cores only (1 physical core reserved for the system); working-set floor scaled by RAM"
+
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "high" } }
+
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { physical_only = true, reserve_cores = 1 } }
+
+[[game.rules]]
+id = "affinity-skipped-too-few-cores"
+when = { physical_cores = { lte = 2 } }
+action = { skip = { reason_zh = "物理核不足 3 个：绑定亲和性会让游戏与系统互相挤压，跳过", reason_en = "fewer than 3 physical cores: affinity binding would starve the game or the system, skipped" } }
+
+# PUBG 地图与贴图常驻量比 CS2 大，工作集下限相应提高（512MB / 半档 256MB）。
+[[game.rules]]
+id = "working-set"
+when = { ram_gb = { gte = 16 } }
+action = { working_set = { min_mb = 512 } }
+
+[[game.rules]]
+id = "working-set-halved"
+when = { ram_gb = { gte = 8, lt = 16 } }
+action = { working_set = { min_mb = 256 } }
+
+[[game.rules]]
+id = "working-set-skipped-low-memory"
+when = { ram_gb = { lt = 8 } }
+action = { skip = { reason_zh = "内存不足 8GB：不设置工作集下限，避免挤占系统内存", reason_en = "less than 8 GiB of RAM: working-set floor skipped to avoid squeezing the system" } }

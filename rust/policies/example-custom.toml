@@ -1,0 +1,116 @@
+# =============================================================================
+# 示例：加游戏 / 改规则**不需要重新编译**
+#
+# 这个文件同时是「模板」和「可运行的内置策略」：
+#   * 它就在内置目录 rust/policies/ 下，因此 gopt 启动时就会解析它（纯数据，零重编译）；
+#   * 把它复制到用户覆盖目录 %LOCALAPPDATA%\GameOptimizer\policies.d\ 下改动即可生效，
+#     用户层同名 id 会**覆盖**内置层，新 id 则直接新增；
+#   * 文件末尾有「覆盖内置」「显式掩码」两段注释示例。
+#
+# 新增一款游戏的完整流程 = 拷贝下面的 [[game]] 段落 + 改 id/名称/match + 重启 gopt。
+# 语法错误不会 panic：加载器会报出「文件:行号: 原因」，其余游戏照常可用。
+# =============================================================================
+schema = 1
+
+# -----------------------------------------------------------------------------
+# 永劫无间 / NARAKA: BLADEPOINT（内置 8 款之外的新游戏，纯数据新增）
+# -----------------------------------------------------------------------------
+[[game]]
+id = "naraka-bladepoint"
+name_zh = "永劫无间"
+name_en = "NARAKA: BLADEPOINT"
+match = "NarakaBladepoint.exe"
+name_aliases = ["Naraka", "永劫"]
+description_zh = "High 优先级；仅物理核（保留 1 个物理核给系统）；工作集下限按内存降级；释放用户态启动项"
+description_en = "High priority; physical cores only (1 physical core reserved); working-set floor scaled by RAM; user-scope startup entries disabled"
+
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "high" } }
+
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { physical_only = true, reserve_cores = 1 } }
+
+[[game.rules]]
+id = "working-set"
+when = { ram_gb = { gte = 16 } }
+action = { working_set = { min_mb = 512 } }
+
+[[game.rules]]
+id = "working-set-halved"
+when = { ram_gb = { gte = 8, lt = 16 } }
+action = { working_set = { min_mb = 256 } }
+
+# 释放启动项：默认只碰 HKCU（用户态、不需要管理员）。禁用 = 改名迁移（"Foo" -> "[disabled] Foo"），
+# 内容原样保留，一键即可还原；ignore_missing = true 表示条目不存在时按“跳过”处理而不是报错。
+[[game.rules]]
+id = "release-startup"
+action = { run_entries = { hive = "hkcu", disable = ["Discord"], ignore_missing = true } }
+
+# -----------------------------------------------------------------------------
+# 原神 / Genshin Impact（一款游戏多个可执行文件：国际服 + 国服）
+# -----------------------------------------------------------------------------
+[[game]]
+id = "genshin-impact"
+name_zh = "原神"
+name_en = "Genshin Impact"
+match = "GenshinImpact.exe"
+exe_aliases = ["YuanShen.exe"]
+name_aliases = ["Genshin", "YuanShen", "yuanshen"]
+description_zh = "AboveNormal 优先级；全逻辑核（保留全局序号最大的 1 个逻辑核给系统）；提权时切高性能电源"
+description_en = "Above normal priority; all logical cores (highest-numbered logical core reserved); switches to the high-performance power scheme when elevated"
+
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "above-normal" } }
+
+# reserve_from = "last"：保留全局序号最大的 1 个逻辑核给系统（内置游戏用的是 "first"，
+# 与 C++ 版 leaveCoresForSystem 语义一致；两种口径都支持，默认 "first"）。
+[[game.rules]]
+id = "affinity"
+when = { logical_cores = { gte = 6 } }
+action = { affinity = { reserve_cores = 1, reserve_from = "last" } }
+
+# 电源方案是系统级设置：需要管理员，且属于"危险动作"（会改整机功耗策略）——
+# Plan 会把它标成 requires_elevation = true / is_dangerous = true，由前端决定是否执行。
+# 这里用 when 条件保证未提权时该规则根本不触发。
+[[game.rules]]
+id = "power-high-performance"
+when = { is_elevated = { eq = true } }
+action = { power_scheme = { scheme = "high" } }
+
+# 只有在真的探测到显示适配器时才额外抬高工作集下限（gpu_vendor = "none" 表示没有适配器）；
+# 条件求值支持 gpu_vendor 的 == / !=，"none"/"unknown" 是区分「没探测到」与「认不出厂商」的两个值。
+[[game.rules]]
+id = "working-set-with-gpu"
+when = { gpu_vendor = { ne = "none" } }
+action = { working_set = { min_mb = 384 } }
+
+# =============================================================================
+# 示例 A：覆盖内置策略（把下面这段取消注释并放进用户目录，即可覆盖内置的 cs2）
+# =============================================================================
+# [[game]]
+# id = "cs2"                          # 与内置同 id ⇒ 覆盖内置层，而不是新增
+# name_zh = "CS2（保守档）"
+# name_en = "Counter-Strike 2 (conservative)"
+# match = "cs2.exe"
+# description_zh = "保守档：AboveNormal + 保留 4 个逻辑核"
+# description_en = "Conservative: above normal priority, 4 logical cores reserved"
+#
+# [[game.rules]]
+# id = "priority"
+# action = { priority = { class = "above-normal" } }
+#
+# [[game.rules]]
+# id = "affinity"
+# action = { affinity = { reserve_cores = 4 } }
+
+# =============================================================================
+# 示例 B：显式掩码（与 reserve_cores 二选一，只能用在处理器组 0）
+# 掩码按"组内第 i 个逻辑处理器 = 第 i 位"，接受十进制整数或 "0x..." 十六进制字符串。
+# =============================================================================
+# [[game.rules]]
+# id = "affinity-mask"
+# action = { affinity = { mask = "0x0000ffff" } }

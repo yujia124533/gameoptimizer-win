@@ -1,0 +1,132 @@
+# GameOptimizer-RS —— Rust CI（Phase 1，**非阻断**）
+#
+# 定位与边界（重要）：
+#   * C++ v1.1.0 仍是正式发布版；本 workflow 只校验 `rust/` 下的 Rust workspace；
+#   * 它**独立于** `build-release.yml`（该文件逐字节未改动）⇒ C++ 的版本一致性门禁
+#     （tools/check_version.ps1）、产物校验、打 tag 时的 GitHub Release 都**不受本 workflow 结果影响**；
+#   * 这里刻意不使用 `continue-on-error`：Rust 侧失败就该显示为红色（可见性），
+#     只是它不在发布路径上，所以不阻断发布。
+#   * 想把它提升为发布门禁（Phase 3 决策）：在 build-release.yml 的 `build` job 上加一行
+#     `needs: rust`（job 名与本文件的 `rust` 对应）即可。
+#
+# 本地等价命令见 docs/RUST.md §8.3 与 rust/README.md §2。
+
+name: Rust CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  # 纯 C++ 的 PR 不必白跑一遍 Rust 构建；推送到 main/master 与打 tag 时一律跑（可见性优先）
+  pull_request:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不用第三方 toolchain action：windows-latest 预装 rustup + stable，这里只固定住"在跑哪个工具链"
+      - name: Toolchain info
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup show
+          rustup component add rustfmt clippy
+          rustc --version
+          cargo --version
+
+      # 缓存：registry/git + rust/target（key 绑定 Cargo.lock）
+      # 注意：lto=true + codegen-units=1 时 release 档较慢，缓存命中能显著缩短 CI 时长
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        working-directory: rust
+        shell: pwsh
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        working-directory: rust
+        shell: pwsh
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test --workspace
+        working-directory: rust
+        shell: pwsh
+        run: cargo test --workspace --locked
+
+      - name: cargo build --release
+        working-directory: rust
+        shell: pwsh
+        run: cargo build --release --workspace --locked
+
+      # 冒烟：产物真的能跑；Mock 后端 ⇒ 不碰 runner 的系统状态，策略 → 计划 → 审计链全在 %TEMP% 里闭环
+      - name: Smoke test the release binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'rust/target/release/gopt.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "missing artifact: $exe" }
+
+          $env:GOPT_DATA_DIR = Join-Path $env:RUNNER_TEMP 'gopt-ci'
+          New-Item -ItemType Directory -Force -Path $env:GOPT_DATA_DIR | Out-Null
+
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "gopt --version exit $LASTEXITCODE" }
+
+          & $exe help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "gopt help exit $LASTEXITCODE" }
+
+          $env:GOPT_BACKEND = 'mock'
+          & $exe plan cs2 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "gopt plan exit $LASTEXITCODE" }
+
+          & $exe apply cs2 --yes | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "gopt apply --yes exit $LASTEXITCODE" }
+          $env:GOPT_BACKEND = $null
+
+          & $exe verify-journal
+          if ($LASTEXITCODE -ne 0) { throw "gopt verify-journal exit $LASTEXITCODE" }
+
+          Write-Host 'SMOKE: PASS'
+
+      # 真机往返自检（advisory）：runner 的 CPU 拓扑/电源方案不可控，故不让它把 job 变红，
+      # 只作为日志证据；正式判定在开发机上跑 gopt-verify（见 docs/RUST.md §10）
+      - name: Real-machine round-trip self-check (advisory)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = 'rust/target/release/gopt-verify.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { Write-Host "missing $exe"; exit 1 }
+          $env:GOPT_LANG = 'en'
+          & $exe
+          Write-Host "gopt-verify exit $LASTEXITCODE (advisory: does not fail the job)"
+
+      - name: Upload gopt.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: gopt-rs-windows-x86_64
+          path: |
+            rust/target/release/gopt.exe
+            rust/target/release/gopt-verify.exe
+          if-no-files-found: error
+          retention-days: 14

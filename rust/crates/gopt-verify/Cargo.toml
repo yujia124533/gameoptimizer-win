@@ -1,0 +1,20 @@
+[package]
+name = "gopt-verify"
+description = "GameOptimizer-RS 真机往返自检：优先级/亲和性/工作集/电源方案/启动项逐项 PASS/FAIL"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "gopt-verify"
+path = "src/main.rs"
+
+[dependencies]
+gopt-hal = { path = "../gopt-hal" }
+gopt-journal = { path = "../gopt-journal" }
+serde_json = "1"
+# 说明：本 crate **不再**依赖 windows —— 工作集读回改由 gopt-hal 的
+# `SystemApi::get_working_set`（官方 GetProcessWorkingSetSize）提供，
+# 因此这里既没有 unsafe，也没有平台专用依赖（见 src/main.rs 的 forbid(unsafe_code)）。

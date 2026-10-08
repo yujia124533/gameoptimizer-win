@@ -1,0 +1,52 @@
+# =============================================================================
+# 无畏契约 / VALORANT（台服旧译名：瓦罗兰特）
+#
+# 与 C++ 版 v1.1.0 预设逐字段对应（GameId::Valorant）：
+#   processPriorityClass = HIGH_PRIORITY_CLASS -> class = "high"
+#   leaveCoresForSystem  = 1                   -> reserve_cores = 1
+#   bindPhysicalOnly     = false               -> 绑定全部逻辑核
+#   gpuMaxFrames         = 1                   -> Rust 版不实现（第三方厂商库，红线）
+#   workingSetMinMB      = 256                 -> >=16GB 时 256MB，8~16GB 时减半为 128MB
+#
+# 注意：Vanguard 反作弊以驱动 + 受保护进程方式运行，本工具只使用官方 OpenProcess/
+# SetPriorityClass 等公开 API，不做注入、不做内核 Hook，因此不会与反作弊冲突。
+# =============================================================================
+schema = 1
+
+[[game]]
+id = "valorant"
+name_zh = "无畏契约"
+name_en = "VALORANT"
+match = "VALORANT-Win64-Shipping.exe"
+name_aliases = ["瓦罗兰特", "valorant", "瓦"]
+description_zh = "High 优先级；全逻辑核（保留 1 个逻辑核给系统）；工作集下限按内存降级"
+description_en = "High priority; all logical cores (1 logical core reserved for the system); working-set floor scaled by RAM"
+
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "high" } }
+
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { reserve_cores = 1 } }
+
+[[game.rules]]
+id = "affinity-skipped-too-few-cores"
+when = { physical_cores = { lte = 2 } }
+action = { skip = { reason_zh = "物理核不足 3 个：绑定亲和性会让游戏与系统互相挤压，跳过", reason_en = "fewer than 3 physical cores: affinity binding would starve the game or the system, skipped" } }
+
+[[game.rules]]
+id = "working-set"
+when = { ram_gb = { gte = 16 } }
+action = { working_set = { min_mb = 256 } }
+
+[[game.rules]]
+id = "working-set-halved"
+when = { ram_gb = { gte = 8, lt = 16 } }
+action = { working_set = { min_mb = 128 } }
+
+[[game.rules]]
+id = "working-set-skipped-low-memory"
+when = { ram_gb = { lt = 8 } }
+action = { skip = { reason_zh = "内存不足 8GB：不设置工作集下限，避免挤占系统内存", reason_en = "less than 8 GiB of RAM: working-set floor skipped to avoid squeezing the system" } }

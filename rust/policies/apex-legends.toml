@@ -1,0 +1,34 @@
+# =============================================================================
+# Apex Legends
+#
+# 与 C++ 版 v1.1.0 预设逐字段对应（GameId::Apex）：
+#   processPriorityClass = ABOVE_NORMAL_PRIORITY_CLASS -> class = "above-normal"
+#   leaveCoresForSystem  = 1                           -> reserve_cores = 1
+#   bindPhysicalOnly     = false                       -> 绑定全部逻辑核
+#   gpuMaxFrames         = 2                           -> Rust 版不实现（第三方厂商库，红线）
+#   workingSetMinMB      = 0                           -> 不设置工作集
+# =============================================================================
+schema = 1
+
+[[game]]
+id = "apex-legends"
+name_zh = "Apex 英雄"
+name_en = "Apex Legends"
+match = "r5apex.exe"
+name_aliases = ["Apex"]
+description_zh = "AboveNormal 优先级；全逻辑核（保留 1 个逻辑核给系统）"
+description_en = "Above normal priority; all logical cores (1 logical core reserved for the system)"
+
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "above-normal" } }
+
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { reserve_cores = 1 } }
+
+[[game.rules]]
+id = "affinity-skipped-too-few-cores"
+when = { physical_cores = { lte = 2 } }
+action = { skip = { reason_zh = "物理核不足 3 个：绑定亲和性会让游戏与系统互相挤压，跳过", reason_en = "fewer than 3 physical cores: affinity binding would starve the game or the system, skipped" } }

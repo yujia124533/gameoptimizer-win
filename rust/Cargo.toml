@@ -1,0 +1,37 @@
+# GameOptimizer-RS —— Rust 重写（Phase 1）workspace 骨架
+#
+# 目录约定：本文件与 rust/ 下所有内容均为新增，不改动仓库中任何 C++ 源码。
+# 依赖面刻意收窄（仅官方 windows crate + serde），不引入 async / 日志 / GUI 框架。
+#
+# 新增 crate 时需登记到 members。这里使用显式列表而不是 "crates/*" 通配：
+# 任何尚在编写中、暂时编译不过的兄弟 crate 都不会影响 `cargo build -p gopt-hal`。
+[workspace]
+resolver = "2"
+members = [
+    "crates/gopt-hal",
+    "crates/gopt-policy",
+    "crates/gopt-journal",
+    # t4：编排内核 + CLI 前端 + 真机往返自检
+    "crates/gopt-core",
+    "crates/gopt-cli",
+    "crates/gopt-verify",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["GameOptimizer-RS contributors"]
+
+[workspace.dependencies]
+# 官方 Win32 绑定（windows-rs 0.58），不使用任何第三方封装
+windows = "0.58"
+serde = { version = "1", features = ["derive"] }
+# 声明式策略（TOML）解析：0.8 起带 `Spanned`，可把校验错误的行号/列号报给用户
+toml = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+# 保持默认 panic = "unwind"：本 crate 不以 panic 作为错误路径（见 gopt-hal/README.md）

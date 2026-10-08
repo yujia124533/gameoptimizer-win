@@ -1,0 +1,55 @@
+# =============================================================================
+# CS2 / Counter-Strike 2
+#
+# 与 C++ 版 v1.1.0 预设逐字段对应（GameId::CS2）：
+#   processPriorityClass = HIGH_PRIORITY_CLASS -> class = "high"
+#   leaveCoresForSystem  = 1                   -> reserve_cores = 1（物理核口径）
+#   bindPhysicalOnly     = true                -> physical_only = true（排除 SMT 兄弟核）
+#   gpuMaxFrames         = 1                   -> Rust 版不实现（第三方厂商库，红线）
+#   workingSetMinMB      = 256                 -> >=16GB 时 256MB，8~16GB 时减半为 128MB
+#
+# CS2 是延迟最敏感的一档：只绑定物理核（避免超线程兄弟核争抢 L1/L2 与执行端口），
+# 同时固定工作集下限，减少对局中缺页抖动。
+# =============================================================================
+schema = 1
+
+[[game]]
+id = "cs2"
+name_zh = "CS2"
+name_en = "Counter-Strike 2"
+match = "cs2.exe"
+exe_aliases = ["csgo.exe"]
+name_aliases = ["反恐精英2", "Counter-Strike"]
+description_zh = "High 优先级；仅物理核（保留 1 个物理核给系统）；工作集下限按内存降级"
+description_en = "High priority; physical cores only (1 physical core reserved for the system); working-set floor scaled by RAM"
+
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "high" } }
+
+# 仅物理核：把每个物理核的 SMT 兄弟核一起选中，再跳过全局序号最小的 1 个物理核给系统。
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { physical_only = true, reserve_cores = 1 } }
+
+[[game.rules]]
+id = "affinity-skipped-too-few-cores"
+when = { physical_cores = { lte = 2 } }
+action = { skip = { reason_zh = "物理核不足 3 个：绑定亲和性会让游戏与系统互相挤压，跳过", reason_en = "fewer than 3 physical cores: affinity binding would starve the game or the system, skipped" } }
+
+# 工作集下限（不是预分配，可被系统随时回收）：内存越少越保守，< 8GB 时完全不设置。
+[[game.rules]]
+id = "working-set"
+when = { ram_gb = { gte = 16 } }
+action = { working_set = { min_mb = 256 } }
+
+[[game.rules]]
+id = "working-set-halved"
+when = { ram_gb = { gte = 8, lt = 16 } }
+action = { working_set = { min_mb = 128 } }
+
+[[game.rules]]
+id = "working-set-skipped-low-memory"
+when = { ram_gb = { lt = 8 } }
+action = { skip = { reason_zh = "内存不足 8GB：不设置工作集下限，避免挤占系统内存", reason_en = "less than 8 GiB of RAM: working-set floor skipped to avoid squeezing the system" } }

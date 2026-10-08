@@ -1,0 +1,18 @@
+[package]
+name = "gopt-policy"
+description = "GameOptimizer-RS 声明式策略引擎：TOML 策略模型 / 条件求值 / 可解释 Plan 生成 / 用户覆盖"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 依赖面刻意收窄：
+#   * gopt-hal —— 策略只描述"要做什么"，执行永远经 HAL；策略层不直接触碰系统；
+#   * serde    —— 策略模型 / Plan / 审计字段的序列化；
+#   * toml     —— 声明式策略文件解析（含 `Spanned`，用于"文件名:行号"报错）。
+# 没有 async、没有正则引擎（通配匹配自己实现）、没有第三方 Win32 封装。
+gopt-hal = { path = "../gopt-hal" }
+serde = { workspace = true }
+toml = { workspace = true }

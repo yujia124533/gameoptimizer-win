@@ -1,0 +1,42 @@
+# =============================================================================
+# 三角洲行动 / Delta Force
+#
+# 与 C++ 版 v1.1.0 预设逐字段对应（来源：src/preset/GameOptimizationPreset.cpp,
+# GameId::DeltaForce）：
+#   processPriorityClass = HIGH_PRIORITY_CLASS  -> [priority] class = "high"
+#   leaveCoresForSystem  = 1                    -> [affinity] reserve_cores = 1
+#   bindPhysicalOnly     = false                -> 绑定全部逻辑核
+#   gpuMaxFrames         = 1                    -> Rust 版不实现（需要 NVAPI/ADL 第三方库，
+#                                                  违反「仅官方 Win32 API」红线）
+#   switchHighPerformancePower = false          -> 不改电源方案（系统级设置，默认不动）
+#
+# 所有动作都可回滚：set_priority 返回旧值、set_affinity 返回旧计划、set_working_set 由系统
+# 按需回收。本文件不需要管理员权限。
+# =============================================================================
+schema = 1
+
+[[game]]
+id = "delta-force"
+name_zh = "三角洲行动"
+name_en = "Delta Force"
+match = "DeltaForceClient-Win64-Shipping.exe"
+description_zh = "High 优先级；全逻辑核（保留 1 个逻辑核给系统）"
+description_en = "High priority; all logical cores (1 logical core reserved for the system)"
+
+# HIGH 是本工具的硬上限：REALTIME 在 PriorityClass 类型里根本不存在，写成 "realtime"
+# 会被策略校验直接拒绝（PolicyDenied），不可能绕过。
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "high" } }
+
+# 亲和性：保留全局序号最小的 1 个逻辑核给系统（与 C++ 的 leaveCoresForSystem 语义一致）。
+# 物理核 <= 2 的机器上绑定只会互相挤压，因此与 C++ 降级一致地跳过。
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { reserve_cores = 1 } }
+
+[[game.rules]]
+id = "affinity-skipped-too-few-cores"
+when = { physical_cores = { lte = 2 } }
+action = { skip = { reason_zh = "物理核不足 3 个：绑定亲和性会让游戏与系统互相挤压，跳过", reason_en = "fewer than 3 physical cores: affinity binding would starve the game or the system, skipped" } }

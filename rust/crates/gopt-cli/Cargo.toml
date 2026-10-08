@@ -1,0 +1,22 @@
+[package]
+name = "gopt-cli"
+description = "GameOptimizer-RS 命令行前端：手写参数解析 + 全量 --json（单内核多前端）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "gopt"
+path = "src/main.rs"
+
+[dependencies]
+# 前端只依赖内核：不直接依赖 gopt-hal / gopt-journal（内核已重新导出所需类型），
+# 也就不会出现"某个前端绕过内核直接改系统"的路径。
+gopt-core = { path = "../gopt-core" }
+serde = { workspace = true }
+serde_json = "1"
+
+[dev-dependencies]
+# 集成测试用 serde_json 解析 --json 输出；临时目录工具手写在 tests/ 里，无第三方依赖。

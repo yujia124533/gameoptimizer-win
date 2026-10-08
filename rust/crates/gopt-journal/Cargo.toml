@@ -1,0 +1,20 @@
+[package]
+name = "gopt-journal"
+description = "GameOptimizer-RS 审计日志：SHA-256 哈希链 + 事件溯源回滚计划 + 旧格式兼容导入"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 依赖面刻意收窄到 4 个：HAL 值类型 + serde + serde_json（JSONL 行）+ sha2（哈希链）。
+# serde_json / sha2 的版本就地声明而不动 workspace 依赖表：本任务的写域只有
+# `rust/crates/gopt-journal/**` 与 workspace members 一行。
+gopt-hal = { path = "../gopt-hal" }
+serde = { workspace = true }
+serde_json = "1"
+sha2 = "0.10"
+
+# 无 dev-dependencies：临时目录等测试工具全部手写在 tests/support 里，
+# 不引入 tempfile / rand 等第三方依赖（红线：依赖面越小越可审计）。

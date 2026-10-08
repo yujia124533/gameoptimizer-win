@@ -1,0 +1,6 @@
+# Rust 构建产物（禁止入库）
+target/
+**/*.rs.bk
+
+# 本地 cargo 工具链残留
+.cargo/

@@ -1,0 +1,24 @@
+[package]
+name = "gopt-hal"
+description = "GameOptimizer-RS 硬件抽象层：SystemApi trait + 官方 Win32 实现 + Mock 实现"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 只有两个依赖：官方 windows 绑定与 serde。
+# windows 的 feature 列表即本 crate 允许触碰的全部官方 API 面（kernel32 / advapi32 /
+# powrprof / dxgi / 注册表）；没有注入、没有内核 Hook、没有未文档化 API。
+serde = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_Power",
+    "Win32_Graphics_Dxgi",
+] }

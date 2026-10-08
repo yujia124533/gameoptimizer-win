@@ -1,0 +1,21 @@
+[package]
+name = "gopt-core"
+description = "GameOptimizer-RS 编排内核：detect → load policy → plan → apply（写审计日志）→ rollback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# 内核依赖面 = 三个已交付的 workspace crate + serde/serde_json。
+# 刻意不依赖 `windows`：触碰系统只能经 `gopt-hal::SystemApi`（红线）。
+gopt-hal = { path = "../gopt-hal" }
+gopt-policy = { path = "../gopt-policy" }
+gopt-journal = { path = "../gopt-journal" }
+serde = { workspace = true }
+# --json 输出与 journal 载荷：版本就地声明（本任务写域不动 workspace 依赖表）
+serde_json = "1"
+
+[dev-dependencies]
+# 测试用的 Mock 后端与临时目录工具都是 workspace 内 crate / 标准库，无第三方依赖。

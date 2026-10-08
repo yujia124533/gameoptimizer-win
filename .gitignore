@@ -12,3 +12,4 @@ savepoints.txt
 # 临时
 *.o
 *.exe.tmp
+rust/target/

@@ -1,0 +1,38 @@
+# =============================================================================
+# 英雄联盟 / League of Legends
+#
+# 与 C++ 版 v1.1.0 预设逐字段对应（GameId::LeagueOfLegends）：
+#   processPriorityClass = ABOVE_NORMAL_PRIORITY_CLASS -> class = "above-normal"
+#   leaveCoresForSystem  = 1                           -> reserve_cores = 1
+#   bindPhysicalOnly     = false                       -> 绑定全部逻辑核
+#   gpuMaxFrames         = 2                           -> Rust 版不实现（第三方厂商库，红线）
+#   switchHighPerformancePower = false                 -> 不改电源方案
+#
+# 目标进程是实战客户端 League of Legends.exe；LeagueClient.exe（客户端 UI）不在绑定范围内，
+# 与 C++ 版保持一致。
+# =============================================================================
+schema = 1
+
+[[game]]
+id = "league-of-legends"
+name_zh = "英雄联盟"
+name_en = "League of Legends"
+match = "League of Legends.exe"
+name_aliases = ["LoL", "英雄联盟客户端"]
+description_zh = "AboveNormal 优先级；全逻辑核（保留 1 个逻辑核给系统）"
+description_en = "Above normal priority; all logical cores (1 logical core reserved for the system)"
+
+# 竞技对抗类游戏对延迟敏感但对抢占敏感度低于 FPS：AboveNormal 即可，不必抢到 HIGH。
+[[game.rules]]
+id = "priority"
+action = { priority = { class = "above-normal" } }
+
+[[game.rules]]
+id = "affinity"
+when = { physical_cores = { gte = 3 } }
+action = { affinity = { reserve_cores = 1 } }
+
+[[game.rules]]
+id = "affinity-skipped-too-few-cores"
+when = { physical_cores = { lte = 2 } }
+action = { skip = { reason_zh = "物理核不足 3 个：绑定亲和性会让游戏与系统互相挤压，跳过", reason_en = "fewer than 3 physical cores: affinity binding would starve the game or the system, skipped" } }
