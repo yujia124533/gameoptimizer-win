@@ -1,0 +1,11 @@
+# 行尾策略（重要）
+#
+# 背景：Windows 上的 GitHub runner 默认把文本文件按 CRLF 检出，而本仓库的
+# Rust 侧存在**字节级契约**（审计日志的规范 JSON、golden fixture、TOML 策略的
+# 逐字节校验）。同一份测试在 LF 开发机全绿、在 CRLF 检出上却会失败——这类
+# 差异极难从日志看出，所以这里显式把 Rust workspace 钉成 LF。
+#
+# C++ 侧保持原样（未列入本文件），其发布链路不受影响。
+
+rust/** text eol=lf
+*.toml   text eol=lf

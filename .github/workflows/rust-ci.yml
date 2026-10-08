@@ -72,7 +72,32 @@ jobs:
       - name: cargo test --workspace
         working-directory: rust
         shell: pwsh
-        run: cargo test --workspace --locked
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:RUST_BACKTRACE = '1'
+          $out = 'test-output.txt'
+          cargo test --workspace --locked 2>&1 | Tee-Object -FilePath $out
+          $code = $LASTEXITCODE
+
+          # 失败详情写进 job summary：公开仓库的 step 日志需要鉴权才能取，
+          # 而 check-run 的 summary 可匿名读取，便于维护者远程定位问题。
+          $lines = @()
+          $lines += '### Rust test environment'
+          $lines += "- logical cores: $([Environment]::ProcessorCount)"
+          $lines += "- OS: $([System.Environment]::OSVersion.VersionString)"
+          $lines += "- rustc: $(rustc --version)"
+          $lines += "- core.autocrlf: $(git config --get core.autocrlf)"
+          if ($code -ne 0) {
+            $lines += '### Failure excerpt'
+            $lines += '```'
+            $lines += (Get-Content $out |
+                       Select-String -Pattern 'FAILED|panicked|assertion|left:|right:|^error' |
+                       Select-Object -Last 40 |
+                       ForEach-Object { $_.Line })
+            $lines += '```'
+          }
+          $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          exit $code
 
       - name: cargo build --release
         working-directory: rust
